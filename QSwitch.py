@@ -2,6 +2,8 @@ import numpy as np
 import scqubits as scq
 import qutip as qt
 
+from tqdm import tqdm
+
 from PulseSequence import PulseSequence
 scq.settings.PROGRESSBAR_DISABLED = True
 
@@ -47,11 +49,14 @@ class QSwitch():
         evals3 -= evals3[0]
         evals4 -= evals4[0]
 
-        alpha1 = alpha2 = alpha3 = 0
+        alpha1 = alpha2 = alpha3 = alpha4 = 0
         if not isCavity[0]: alpha1 = evals1[2]-2*evals1[1]
         if not isCavity[1]: alpha2 = evals2[2]-2*evals2[1]
         if not isCavity[2]: alpha3 = evals3[2]-2*evals3[1]
         if not isCavity[3]: alpha4 = evals4[2]-2*evals4[1]
+
+        self.qubit_freqs = [evals1[1], evals2[1], evals3[1], evals4[1]]
+        self.alphas = [alpha1, alpha2, alpha3, alpha4]
 
         a = qt.tensor(qt.destroy(cutoffs[0]), qt.qeye(cutoffs[1]), qt.qeye(cutoffs[2]), qt.qeye(cutoffs[3])) # source
         b = qt.tensor(qt.qeye(cutoffs[0]), qt.destroy(cutoffs[1]), qt.qeye(cutoffs[2]), qt.qeye(cutoffs[3])) # switch
@@ -128,6 +133,24 @@ class QSwitch():
             prod.append(qt.basis(self.cutoffs[q], lvl))
         return qt.tensor(*prod)
 
+    """
+    Check up to 3 excitations that states are mapped 1:1
+    (if failed, probably couplings are too strong)
+    """
+    def check_state_mapping(self):
+        seen = np.zeros(self.cutoffs)
+        evals, evecs = self.esys
+        for n, evec in enumerate(tqdm(evecs)):
+            i = self.find_bare(evec)[0]
+            seen[i[0], i[1], i[2], i[3]] += 1
+
+        for i1 in range(self.cutoffs[0]):
+            for i2 in range(self.cutoffs[1]):
+                for i3 in range(self.cutoffs[2]):
+                    for i4 in range(self.cutoffs[3]):
+                        assert seen[i1,i2,i3,i4] == 1 or i1+i2+i3+i4 > 3, f'Mapped dressed state to {[i1,i2,i3,i4]} {seen[i1,i2,i3,i4]} times!!'
+        print("Good enough for dressed states mappings.")
+
     def state(self, levels):
         return self.find_dressed(self.make_bare(levels))[1]
 
@@ -154,3 +177,12 @@ class QSwitch():
     def add_sequential_pi_pulse(self, seq, state1, state2, amp, t_pulse=None):
         if t_pulse == None: t_pulse = self.get_Tpi(state1, state2, amp=amp)
         seq.wait(seq.const_pulse(wd=self.get_wd(state1, state2), amp=amp, t_pulse=t_pulse))
+
+    """
+    Assemble the H_solver with a given pulse sequence to be put into mesolve
+    """ 
+    def H_solver(self, seq):
+        H_solver = [self.H]
+        for pulse in seq.get_pulse_seq():
+            H_solver.append([self.H_drive, pulse])
+        return H_solver
