@@ -63,6 +63,11 @@ class QSwitch():
         c = qt.tensor(qt.qeye(cutoffs[0]), qt.qeye(cutoffs[1]), qt.destroy(cutoffs[2]), qt.qeye(cutoffs[3])) # out1
         d = qt.tensor(qt.qeye(cutoffs[0]), qt.qeye(cutoffs[1]), qt.qeye(cutoffs[2]), qt.destroy(cutoffs[3])) # out2
 
+        self.a1 = a
+        self.a2 = b
+        self.a3 = c
+        self.a4 = d
+
         H_source    = 2*np.pi*(evals1[1]*a.dag()*a + 1/2*alpha1*a.dag()*a*(a.dag()*a - 1))
         H_switch    = 2*np.pi*(evals2[1]*b.dag()*b + 1/2*alpha2*b.dag()*b*(b.dag()*b - 1))
         H_out1      = 2*np.pi*(evals3[1]*c.dag()*c + 1/2*alpha3*c.dag()*c*(c.dag()*c - 1))
@@ -137,19 +142,17 @@ class QSwitch():
     Check up to 3 excitations that states are mapped 1:1
     (if failed, probably couplings are too strong)
     """
-    def check_state_mapping(self):
+    def check_state_mapping(self, n):
         seen = np.zeros(self.cutoffs)
         evals, evecs = self.esys
-        for n, evec in enumerate(tqdm(evecs)):
-            i = self.find_bare(evec)[0]
-            seen[i[0], i[1], i[2], i[3]] += 1
-
-        for i1 in range(self.cutoffs[0]):
-            for i2 in range(self.cutoffs[1]):
-                for i3 in range(self.cutoffs[2]):
-                    for i4 in range(self.cutoffs[3]):
-                        assert seen[i1,i2,i3,i4] == 1 or i1+i2+i3+i4 > 3, f'Mapped dressed state to {[i1,i2,i3,i4]} {seen[i1,i2,i3,i4]} times!!'
+        for evec in tqdm(evecs):
+            i = tuple(self.find_bare(evec)[0])
+            seen[i] += 1
+            if seen[i] != 1 and sum(i) <= n:
+                print(f'Mapped dressed state to {self.level_nums_to_name(i)} {seen[i]} times!!')
+                return False
         print("Good enough for dressed states mappings.")
+        return True
 
     def state(self, levels):
         return self.find_dressed(self.make_bare(levels))[1]
@@ -173,10 +176,24 @@ class QSwitch():
 
     """
     Add a pi pulse between state1 and state2 immediately after the previous pulse
+    t_pulse_factor multiplies t_pulse to get the final pulse length
     """
-    def add_sequential_pi_pulse(self, seq, state1, state2, amp, t_pulse=None):
+    def add_sequential_pi_pulse(self, seq, state1, state2, amp, t_pulse=None, t_pulse_factor=1):
+        self.add_const_pi_pulse(seq, state1, state2, amp, t_pulse=t_pulse, t_pulse_factor=t_pulse_factor)
+
+    """
+    Add a pi pulse between state1 and state2 at time offset from the beginning of the 
+    previous pulse
+    """
+    def add_const_pi_pulse(self, seq, state1, state2, amp, t_offset=0, t_pulse=None, t_pulse_factor=1):
         if t_pulse == None: t_pulse = self.get_Tpi(state1, state2, amp=amp)
-        seq.wait(seq.const_pulse(wd=self.get_wd(state1, state2), amp=amp, t_pulse=t_pulse))
+        t_pulse *= t_pulse_factor
+        seq.const_pulse(
+            wd=self.get_wd(state1, state2),
+            amp=amp,
+            t_pulse=t_pulse,
+            t_start=-t_offset,
+            )
 
     """
     Assemble the H_solver with a given pulse sequence to be put into mesolve
