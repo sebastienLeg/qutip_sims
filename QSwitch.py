@@ -199,7 +199,8 @@ class QSwitch():
     Assemble the H_solver with a given pulse sequence to be put into mesolve
     """ 
     def H_solver(self, seq):
-        H_solver = [self.H]
-        for pulse in seq.get_pulse_seq():
-            H_solver.append([self.H_drive, pulse])
-        return H_solver
+        return [self.H, [self.H_drive, seq.pulse]]
+    def H_solver_array(self, seq, times):
+        return [self.H, 
+        [self.H_drive, np.array([seq.pulse(t, None) for t in times])]
+        ]

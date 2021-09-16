@@ -11,6 +11,7 @@ class PulseSequence:
         self.pulse_seq = []
         self.envelope_seq = []
         self.pulse_lengths = []
+        self.pulse_freqs = []
         self.time = start_time
 
 
@@ -22,7 +23,7 @@ class PulseSequence:
 
     def get_seq_length(self):
         return sum(self.pulse_lengths)
-    
+
     """
     Advance current time by t (marker indicating end of last pulse)
     This is automatically done when calling pulse functions
@@ -32,6 +33,9 @@ class PulseSequence:
 
     def prev_pulse_length(self):
         return self.pulse_lengths[-1]
+
+    def pulse(self, t, args):
+        return sum([pulse_i(t, args) for pulse_i in self.pulse_seq])
     
     """
     Adds the drive_func corresponding to a constant pulse with a sin^2
@@ -52,6 +56,7 @@ class PulseSequence:
         self.envelope_seq.append(envelope)
         self.pulse_seq.append(drive_func)
         self.pulse_lengths.append(t_pulse)
+        self.pulse_freqs.append(wd/2/np.pi)
         self.time = t_start + t_pulse
 
     """
@@ -68,4 +73,5 @@ class PulseSequence:
         self.envelope_seq.append(envelope)
         self.pulse_seq.append(drive_func)
         self.pulse_lengths.append(6*t_pulse_sigma)
+        self.pulse_freqs.append(wd/2/np.pi)
         self.time = t_start + 6*t_pulse_sigma
