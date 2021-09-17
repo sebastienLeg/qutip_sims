@@ -2,6 +2,8 @@ import numpy as np
 import scqubits as scq
 import qutip as qt
 
+from tqdm import tqdm
+
 from PulseSequence import PulseSequence
 scq.settings.PROGRESSBAR_DISABLED = True
 
@@ -47,16 +49,24 @@ class QSwitch():
         evals3 -= evals3[0]
         evals4 -= evals4[0]
 
-        alpha1 = alpha2 = alpha3 = 0
+        alpha1 = alpha2 = alpha3 = alpha4 = 0
         if not isCavity[0]: alpha1 = evals1[2]-2*evals1[1]
         if not isCavity[1]: alpha2 = evals2[2]-2*evals2[1]
         if not isCavity[2]: alpha3 = evals3[2]-2*evals3[1]
         if not isCavity[3]: alpha4 = evals4[2]-2*evals4[1]
 
+        self.qubit_freqs = [evals1[1], evals2[1], evals3[1], evals4[1]]
+        self.alphas = [alpha1, alpha2, alpha3, alpha4]
+
         a = qt.tensor(qt.destroy(cutoffs[0]), qt.qeye(cutoffs[1]), qt.qeye(cutoffs[2]), qt.qeye(cutoffs[3])) # source
         b = qt.tensor(qt.qeye(cutoffs[0]), qt.destroy(cutoffs[1]), qt.qeye(cutoffs[2]), qt.qeye(cutoffs[3])) # switch
         c = qt.tensor(qt.qeye(cutoffs[0]), qt.qeye(cutoffs[1]), qt.destroy(cutoffs[2]), qt.qeye(cutoffs[3])) # out1
         d = qt.tensor(qt.qeye(cutoffs[0]), qt.qeye(cutoffs[1]), qt.qeye(cutoffs[2]), qt.destroy(cutoffs[3])) # out2
+
+        self.a1 = a
+        self.a2 = b
+        self.a3 = c
+        self.a4 = d
 
         H_source    = 2*np.pi*(evals1[1]*a.dag()*a + 1/2*alpha1*a.dag()*a*(a.dag()*a - 1))
         H_switch    = 2*np.pi*(evals2[1]*b.dag()*b + 1/2*alpha2*b.dag()*b*(b.dag()*b - 1))
@@ -128,6 +138,22 @@ class QSwitch():
             prod.append(qt.basis(self.cutoffs[q], lvl))
         return qt.tensor(*prod)
 
+    """
+    Check up to 3 excitations that states are mapped 1:1
+    (if failed, probably couplings are too strong)
+    """
+    def check_state_mapping(self, n):
+        seen = np.zeros(self.cutoffs)
+        evals, evecs = self.esys
+        for evec in tqdm(evecs):
+            i = tuple(self.find_bare(evec)[0])
+            seen[i] += 1
+            if seen[i] != 1 and sum(i) <= n:
+                print(f'Mapped dressed state to {self.level_nums_to_name(i)} {seen[i]} times!!')
+                return False
+        print("Good enough for dressed states mappings.")
+        return True
+
     def state(self, levels):
         return self.find_dressed(self.make_bare(levels))[1]
 
@@ -150,7 +176,31 @@ class QSwitch():
 
     """
     Add a pi pulse between state1 and state2 immediately after the previous pulse
+    t_pulse_factor multiplies t_pulse to get the final pulse length
     """
-    def add_sequential_pi_pulse(self, seq, state1, state2, amp, t_pulse=None):
+    def add_sequential_pi_pulse(self, seq, state1, state2, amp, t_pulse=None, t_pulse_factor=1):
+        self.add_const_pi_pulse(seq, state1, state2, amp, t_pulse=t_pulse, t_pulse_factor=t_pulse_factor)
+
+    """
+    Add a pi pulse between state1 and state2 at time offset from the beginning of the 
+    previous pulse
+    """
+    def add_const_pi_pulse(self, seq, state1, state2, amp, t_offset=0, t_pulse=None, t_pulse_factor=1):
         if t_pulse == None: t_pulse = self.get_Tpi(state1, state2, amp=amp)
-        seq.wait(seq.const_pulse(wd=self.get_wd(state1, state2), amp=amp, t_pulse=t_pulse))
+        t_pulse *= t_pulse_factor
+        seq.const_pulse(
+            wd=self.get_wd(state1, state2),
+            amp=amp,
+            t_pulse=t_pulse,
+            t_start=-t_offset,
+            )
+
+    """
+    Assemble the H_solver with a given pulse sequence to be put into mesolve
+    """ 
+    def H_solver(self, seq):
+        return [self.H, [self.H_drive, seq.pulse]]
+    def H_solver_array(self, seq, times):
+        return [self.H, 
+        [self.H_drive, np.array([seq.pulse(t, None) for t in times])]
+        ]
