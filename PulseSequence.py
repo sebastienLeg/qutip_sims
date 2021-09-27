@@ -25,6 +25,9 @@ class PulseSequence:
     def get_seq_length(self):
         return sum(self.pulse_lengths)
 
+    def get_pulse_freqs(self):
+        return self.pulse_freqs
+
     def get_pulse_str(self):
         final_pulse_str = self.pulse_strs[0]
         for pulse_str in self.pulse_strs[1:]:

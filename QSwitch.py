@@ -63,23 +63,31 @@ class QSwitch():
         c = qt.tensor(qt.qeye(cutoffs[0]), qt.qeye(cutoffs[1]), qt.destroy(cutoffs[2]), qt.qeye(cutoffs[3])) # out1
         d = qt.tensor(qt.qeye(cutoffs[0]), qt.qeye(cutoffs[1]), qt.qeye(cutoffs[2]), qt.destroy(cutoffs[3])) # out2
 
-        self.a1 = a
-        self.a2 = b
-        self.a3 = c
-        self.a4 = d
+        self.a = a
+        self.b = b
+        self.c = c
+        self.d = d
 
-        H_source    = 2*np.pi*(evals1[1]*a.dag()*a + 1/2*alpha1*a.dag()*a*(a.dag()*a - 1))
-        H_switch    = 2*np.pi*(evals2[1]*b.dag()*b + 1/2*alpha2*b.dag()*b*(b.dag()*b - 1))
-        H_out1      = 2*np.pi*(evals3[1]*c.dag()*c + 1/2*alpha3*c.dag()*c*(c.dag()*c - 1))
-        H_out2      = 2*np.pi*(evals4[1]*d.dag()*d + 1/2*alpha4*d.dag()*d*(d.dag()*d - 1))
+        H_source    = 2*np.pi*(evals1[1]*a.dag()*a + 1/2*alpha1*a.dag()*a.dag()*a*a)
+        H_switch    = 2*np.pi*(evals2[1]*b.dag()*b + 1/2*alpha2*b.dag()*b.dag()*b*b)
+        H_out1      = 2*np.pi*(evals3[1]*c.dag()*c + 1/2*alpha3*c.dag()*c.dag()*c*c)
+        H_out2      = 2*np.pi*(evals4[1]*d.dag()*d + 1/2*alpha4*d.dag()*d.dag()*d*d)
         H_int_12 = 2*np.pi*gs[0] * (a * b.dag() + a.dag() * b)
         H_int_23 = 2*np.pi*gs[1] * (b * c.dag() + b.dag() * c)
         H_int_24 = 2*np.pi*gs[2] * (b * d.dag() + b.dag() * d)
 
         self.H = H_source + H_switch + H_out1 + H_out2 + H_int_12 + H_int_23 + H_int_24
         self.esys = self.H.eigenstates()
-        self.H_drive = 2*np.pi* 1/2 * (b.dag()+b)
+        self.drive_op = 2*np.pi* 1/2 * (b.dag()+b) # time independent drive op w/o drive amp
 
+    """
+    H (not incl H_drive) in the rotating frame of a drive at wd
+    H_tilde = UHU^\dag - iU\dot{U}^\dag,
+    U = e^{-iw_d t (a^\dag a + b^\dag b + c^\dag c + d^\dag d)}
+    """
+    def H_rot(self, wd):
+        a, b, c, d = (self.a, self.b, self.c, self.d)
+        return self.H - wd*(a.dag()*a + b.dag()*b + c.dag()*c + d.dag()*d)
 
     def level_name_to_nums(self, name):
         state = []
@@ -96,8 +104,9 @@ class QSwitch():
     """
     Map bare states of each transmon to dressed states in combined system
     """
-    def find_dressed(self, ket_bare):
-        evals, evecs = self.esys
+    def find_dressed(self, ket_bare, esys=None):
+        if esys == None: esys = self.esys
+        evals, evecs = esys
         best_overlap = 0
         best_state = -1
         for n, evec in enumerate(evecs):
@@ -107,7 +116,7 @@ class QSwitch():
                 best_overlap = overlap
                 best_state = n
         # print(best_state)
-        return best_state, evecs[best_state]
+        return best_state, best_overlap, evecs[best_state]
 
     """
     Map dressed states to bare states
@@ -155,13 +164,90 @@ class QSwitch():
         return True
 
     def state(self, levels):
-        return self.find_dressed(self.make_bare(levels))[1]
+        return self.find_dressed(self.make_bare(levels))[2]
 
     """
     Drive frequency b/w state1 and state2 (strings representing state) 
+    Stark shift from drive is ignored
     """
-    def get_wd(self, state1, state2):
+    def get_base_wd(self, state1, state2):
         return qt.expect(self.H, self.state(state1)) - qt.expect(self.H, self.state(state2))
+
+    """
+    Fine-tuned drive frequency taking into account stark shift from drive
+    Idea: adjust drive frequency until (state1 +/- state2) in the dressed
+        basis of H have the max mean overlap with the estates of the 
+        full H w/ drive
+    state1, state2: strings or array of ints representing bare states
+    amp: drive amp (freq)
+    wd_res: resolution of wd sweeping (angular freq)
+    base_shift: base stark shift to try
+    max_it: max number of iterations when searching for shifts
+    Reference: Zeytinoglu 2015, Gideon's brute stark code
+    """
+    def max_overlap_H_tot_rot(self, state, amp, wd):
+        H_tot_rot = self.H_rot(wd) + 2*np.pi*amp*self.drive_op
+        return self.find_dressed(state, esys=H_tot_rot.eigenstates())[1]
+    def get_wd_helper(self, state1, state2, amp, wd_res=0.01, base_shift=0, max_it=100):
+        wd0 = self.get_base_wd(state1, state2) + base_shift
+        state1 = self.state(state1) # dressed
+        state2 = self.state(state2) # dressed
+        plus = 1/np.sqrt(2) * (state1 + state2)
+        minus = 1/np.sqrt(2) * (state1 - state2)
+
+        # initial
+        overlap_plus = self.max_overlap_H_tot_rot(plus, amp, wd0)
+        overlap_minus = self.max_overlap_H_tot_rot(minus, amp, wd0)
+        avg_overlap = np.mean((overlap_plus, overlap_minus))
+        best_overlap = avg_overlap
+        best_wd = wd0
+        best_shift = base_shift
+        print('init overlap', best_overlap)
+
+        # trying positive shifts
+        for n in range(1, max_it+1):
+            wd = wd0 + n*wd_res
+            overlap_plus = self.max_overlap_H_tot_rot(plus, amp, wd)
+            overlap_minus = self.max_overlap_H_tot_rot(minus, amp, wd)
+            avg_overlap = np.mean((overlap_plus, overlap_minus))
+            if avg_overlap < best_overlap:
+                break
+            else:
+                best_overlap = avg_overlap
+                best_wd = wd
+                best_shift = base_shift + n*wd_res
+                print('positive n', n, 'wd', wd, 'wd_res', wd_res, 'overlap', best_overlap)
+        if n == max_it: print("Too many iterations, try lower resolution!")
+
+        # trying negative shifts
+        for n in range(1, max_it+1):
+            wd = wd0 - n*wd_res
+            overlap_plus = self.max_overlap_H_tot_rot(plus, amp, wd)
+            overlap_minus = self.max_overlap_H_tot_rot(minus, amp, wd)
+            avg_overlap = np.mean((overlap_plus, overlap_minus))
+            if avg_overlap < best_overlap:
+                break
+            else:
+                best_overlap = avg_overlap
+                best_wd = wd
+                best_shift = base_shift - n*wd_res
+                print('negative n', n, 'wd', wd, 'wd_res', wd_res, 'overlap', best_overlap)
+        if n == max_it: print("Too many iterations, try lower resolution!")
+
+        return best_wd, best_shift
+
+    """
+    Fine-tuned drive frequency taking into account stark shift from drive,
+    analyzed with 3 different steps of increasingly small resolution
+    Reference: Gideon's brute stark code
+    """
+    def get_wd(self, state1, state2, amp):
+        # return self.get_base_wd(state1, state2)
+        # wd1, shift1 = self.get_wd_helper(state1, state2, amp, wd_res=0.1, base_shift=0)
+        shift = 0
+        # wd2, shift = self.get_wd_helper(state1, state2, amp, wd_res=0.01, base_shift=shift)
+        wd3, shift = self.get_wd_helper(state1, state2, amp, wd_res=0.001, base_shift=shift)
+        return wd3
 
     """
     Pi pulse length b/w state1 and state2 (strings representing state)
@@ -169,7 +255,7 @@ class QSwitch():
     def get_Tpi(self, state1, state2, amp):
         psi0 = self.state(state1)
         psi1 = self.state(state2)
-        g_eff = psi0.dag() * amp * self.H_drive * psi1 /2/np.pi
+        g_eff = psi0.dag() * amp * self.drive_op * psi1 /2/np.pi
         g_eff = np.abs(g_eff[0][0][0])
         if g_eff == 0: return -1
         return 1/2/g_eff
@@ -185,11 +271,12 @@ class QSwitch():
     Add a pi pulse between state1 and state2 at time offset from the beginning of the 
     previous pulse
     """
-    def add_const_pi_pulse(self, seq, state1, state2, amp, t_offset=0, t_pulse=None, t_pulse_factor=1):
+    def add_const_pi_pulse(self, seq, state1, state2, amp, wd=0, t_offset=0, t_pulse=None, t_pulse_factor=1):
         if t_pulse == None: t_pulse = self.get_Tpi(state1, state2, amp=amp)
         t_pulse *= t_pulse_factor
+        if wd == 0: wd = self.get_wd(state1, state2, amp)
         seq.const_pulse(
-            wd=self.get_wd(state1, state2),
+            wd=wd,
             amp=amp,
             t_pulse=t_pulse,
             t_start=-t_offset,
@@ -199,11 +286,11 @@ class QSwitch():
     Assemble the H_solver with a given pulse sequence to be put into mesolve
     """ 
     def H_solver(self, seq:PulseSequence):
-        return [self.H, [self.H_drive, seq.pulse]]
+        return [self.H, [self.drive_op, seq.pulse]]
     def H_solver_array(self, seq:PulseSequence, times):
         # WARNING: need to sample at short enough times for drive frequency
         return [self.H, 
-        [self.H_drive, np.array([seq.pulse(t, None) for t in times])]
+        [self.drive_op, np.array([seq.pulse(t, None) for t in times])]
         ]
     def H_solver_str(self, seq:PulseSequence):
-        return [self.H, [self.H_drive, seq.get_pulse_str()]]
+        return [self.H, [self.drive_op, seq.get_pulse_str()]]
