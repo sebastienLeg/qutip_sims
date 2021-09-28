@@ -111,11 +111,12 @@ class QSwitch():
         best_state = -1
         for n, evec in enumerate(evecs):
             assert evec.shape == ket_bare.shape
-            overlap = np.abs(ket_bare.overlap(evec))
+            overlap = np.abs(ket_bare.overlap(evec))**2
             if overlap > best_overlap:
                 best_overlap = overlap
                 best_state = n
         # print(best_state)
+        # print('final best overlap', best_overlap)
         return best_state, best_overlap, evecs[best_state]
 
     """
@@ -129,7 +130,7 @@ class QSwitch():
                 for i3 in range(self.cutoffs[2]):
                     for i4 in range(self.cutoffs[3]):
                         psi_bare = self.make_bare([i1, i2, i3, i4])
-                        overlap = np.abs(ket_dressed.overlap(psi_bare))
+                        overlap = np.abs(ket_dressed.overlap(psi_bare))**2
                         if overlap > best_overlap:
                             best_overlap = overlap
                             best_state = [i1, i2, i3, i4]
@@ -163,15 +164,15 @@ class QSwitch():
         print("Good enough for dressed states mappings.")
         return True
 
-    def state(self, levels):
-        return self.find_dressed(self.make_bare(levels))[2]
+    def state(self, levels, esys=None):
+        return self.find_dressed(self.make_bare(levels), esys=esys)[2]
 
     """
     Drive frequency b/w state1 and state2 (strings representing state) 
     Stark shift from drive is ignored
     """
-    def get_base_wd(self, state1, state2):
-        return qt.expect(self.H, self.state(state1)) - qt.expect(self.H, self.state(state2))
+    def get_base_wd(self, state1, state2, esys=None):
+        return qt.expect(self.H, self.state(state1, esys=esys)) - qt.expect(self.H, self.state(state2, esys=esys))
 
     """
     Fine-tuned drive frequency taking into account stark shift from drive
@@ -186,14 +187,14 @@ class QSwitch():
     Reference: Zeytinoglu 2015, Gideon's brute stark code
     """
     def max_overlap_H_tot_rot(self, state, amp, wd):
-        H_tot_rot = self.H_rot(wd) + 2*np.pi*amp*self.drive_op
+        H_tot_rot = self.H_rot(wd) + amp*self.drive_op
         return self.find_dressed(state, esys=H_tot_rot.eigenstates())[1]
     def get_wd_helper(self, state1, state2, amp, wd_res=0.01, base_shift=0, max_it=100):
-        wd0 = self.get_base_wd(state1, state2) + base_shift
-        state1 = self.state(state1) # dressed
-        state2 = self.state(state2) # dressed
-        plus = 1/np.sqrt(2) * (state1 + state2)
-        minus = 1/np.sqrt(2) * (state1 - state2)
+        wd0 = np.abs(self.get_base_wd(state1, state2)) + base_shift # very important to take abs val!
+        psi1 = self.state(state1) # dressed
+        psi2 = self.state(state2) # dressed
+        plus = 1/np.sqrt(2) * (psi1 + psi2)
+        minus = 1/np.sqrt(2) * (psi1 - psi2)
 
         # initial
         overlap_plus = self.max_overlap_H_tot_rot(plus, amp, wd0)
@@ -202,36 +203,44 @@ class QSwitch():
         best_overlap = avg_overlap
         best_wd = wd0
         best_shift = base_shift
-        print('init overlap', best_overlap)
+        # print('init overlap', overlap_plus, overlap_minus)
 
         # trying positive shifts
         for n in range(1, max_it+1):
             wd = wd0 + n*wd_res
+            esys_rot = self.H_rot(wd).eigenstates()
+            psi1 = self.state(state1, esys=esys_rot) # dressed
+            psi2 = self.state(state2, esys=esys_rot) # dressed
+            plus = 1/np.sqrt(2) * (psi1 + psi2)
+            minus = 1/np.sqrt(2) * (psi1 - psi2)
             overlap_plus = self.max_overlap_H_tot_rot(plus, amp, wd)
             overlap_minus = self.max_overlap_H_tot_rot(minus, amp, wd)
             avg_overlap = np.mean((overlap_plus, overlap_minus))
+            # print('positive n', n, 'wd', wd, 'wd_res', wd_res, 'overlap', overlap_plus, overlap_minus)
             if avg_overlap < best_overlap:
                 break
             else:
                 best_overlap = avg_overlap
                 best_wd = wd
                 best_shift = base_shift + n*wd_res
-                print('positive n', n, 'wd', wd, 'wd_res', wd_res, 'overlap', best_overlap)
         if n == max_it: print("Too many iterations, try lower resolution!")
 
         # trying negative shifts
         for n in range(1, max_it+1):
             wd = wd0 - n*wd_res
+            esys_rot = self.H_rot(wd).eigenstates()
+            plus = 1/np.sqrt(2) * (psi1 + psi2)
+            minus = 1/np.sqrt(2) * (psi1 - psi2)
             overlap_plus = self.max_overlap_H_tot_rot(plus, amp, wd)
             overlap_minus = self.max_overlap_H_tot_rot(minus, amp, wd)
             avg_overlap = np.mean((overlap_plus, overlap_minus))
+            # print('negative n', n, 'wd', wd, 'wd_res', wd_res, 'overlap', avg_overlap)
             if avg_overlap < best_overlap:
                 break
             else:
                 best_overlap = avg_overlap
                 best_wd = wd
                 best_shift = base_shift - n*wd_res
-                print('negative n', n, 'wd', wd, 'wd_res', wd_res, 'overlap', best_overlap)
         if n == max_it: print("Too many iterations, try lower resolution!")
 
         return best_wd, best_shift
@@ -242,12 +251,13 @@ class QSwitch():
     Reference: Gideon's brute stark code
     """
     def get_wd(self, state1, state2, amp):
-        # return self.get_base_wd(state1, state2)
-        # wd1, shift1 = self.get_wd_helper(state1, state2, amp, wd_res=0.1, base_shift=0)
-        shift = 0
-        # wd2, shift = self.get_wd_helper(state1, state2, amp, wd_res=0.01, base_shift=shift)
-        wd3, shift = self.get_wd_helper(state1, state2, amp, wd_res=0.001, base_shift=shift)
-        return wd3
+        wd, shift = self.get_wd_helper(state1, state2, amp, wd_res=0.1, base_shift=0)
+        print(wd, shift)
+        wd, shift = self.get_wd_helper(state1, state2, amp, wd_res=0.01, base_shift=shift)
+        print(wd, shift)
+        wd, shift = self.get_wd_helper(state1, state2, amp, wd_res=0.001, base_shift=shift)
+        print(wd, shift)
+        return wd
 
     """
     Pi pulse length b/w state1 and state2 (strings representing state)
@@ -294,3 +304,30 @@ class QSwitch():
         ]
     def H_solver_str(self, seq:PulseSequence):
         return [self.H, [self.drive_op, seq.get_pulse_str()]]
+
+
+if __name__ == "__main__":
+    EJs = [22, 21, 24, 23]
+    ECs = [0.25, 0.4, 0.4, 0.28]
+    gs = [0.1, 0.1, 0.1] # g12, g23, g24
+    cutoffs = [4, 5, 4, 4]
+    isCavity = [False, False, False, False]
+
+    qram = QSwitch(
+        EJs=EJs,
+        ECs=ECs,
+        gs=gs,
+        cutoffs=cutoffs,
+        isCavity=isCavity,
+    )
+
+    qubit_freqs = qram.qubit_freqs
+    alphas = qram.alphas
+    print(qubit_freqs[0], qubit_freqs[1], qubit_freqs[2], qubit_freqs[3])
+    print(alphas[0], alphas[1], alphas[2], alphas[3])
+
+
+    from PulseSequence import PulseSequence
+    times = np.linspace(0, 200, 200)
+    seq = PulseSequence(start_time=0)
+    qram.add_sequential_pi_pulse(seq, 'eggg', 'gfgg', amp=0.12)
