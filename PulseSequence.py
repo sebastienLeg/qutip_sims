@@ -22,8 +22,8 @@ class PulseSequence:
     def get_envelope_seq(self):
         return self.envelope_seq
 
-    def get_seq_length(self):
-        return sum(self.pulse_lengths)
+    def get_pulse_lengths(self):
+        return self.pulse_lengths
 
     def get_pulse_freqs(self):
         return self.pulse_freqs

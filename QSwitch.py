@@ -78,7 +78,11 @@ class QSwitch():
 
         self.H = H_source + H_switch + H_out1 + H_out2 + H_int_12 + H_int_23 + H_int_24
         self.esys = self.H.eigenstates()
-        self.drive_op = 2*np.pi* 1/2 * (b.dag()+b) # time independent drive op w/o drive amp
+
+        # Time independent drive op w/o drive amp.
+        # This assumes time dependence given by sin(wt).
+        # If given by exp(+/-iwt), need to divide by 2.
+        self.drive_op = 2*np.pi* (b.dag()+b)
 
     """
     H (not incl H_drive) in the rotating frame of a drive at wd
@@ -187,10 +191,11 @@ class QSwitch():
     Reference: Zeytinoglu 2015, Gideon's brute stark code
     """
     def max_overlap_H_tot_rot(self, state, amp, wd):
-        H_tot_rot = self.H_rot(wd) + amp*self.drive_op
+        # note factor of 1/2 in front of amp since in rotating frame, assumes
+        # written as a*exp(+iwt) + a.dag()*exp(-iwt)
+        H_tot_rot = self.H_rot(wd) + amp/2 *self.drive_op
         return self.find_dressed(state, esys=H_tot_rot.eigenstates())[1]
-    def get_wd_helper(self, state1, state2, amp, wd_res=0.01, base_shift=0, max_it=100):
-        wd0 = np.abs(self.get_base_wd(state1, state2)) + base_shift # very important to take abs val!
+    def get_wd_helper(self, state1, state2, amp, wd0, wd_res=0.01, max_it=100):
         psi1 = self.state(state1) # dressed
         psi2 = self.state(state2) # dressed
         plus = 1/np.sqrt(2) * (psi1 + psi2)
@@ -202,7 +207,6 @@ class QSwitch():
         avg_overlap = np.mean((overlap_plus, overlap_minus))
         best_overlap = avg_overlap
         best_wd = wd0
-        best_shift = base_shift
         # print('init overlap', overlap_plus, overlap_minus)
 
         # trying positive shifts
@@ -222,7 +226,6 @@ class QSwitch():
             else:
                 best_overlap = avg_overlap
                 best_wd = wd
-                best_shift = base_shift + n*wd_res
         if n == max_it: print("Too many iterations, try lower resolution!")
 
         # trying negative shifts
@@ -240,10 +243,10 @@ class QSwitch():
             else:
                 best_overlap = avg_overlap
                 best_wd = wd
-                best_shift = base_shift - n*wd_res
         if n == max_it: print("Too many iterations, try lower resolution!")
 
-        return best_wd, best_shift
+        print('\tfinal overlap', best_overlap, 'wd', best_wd)
+        return best_wd
 
     """
     Fine-tuned drive frequency taking into account stark shift from drive,
@@ -251,12 +254,12 @@ class QSwitch():
     Reference: Gideon's brute stark code
     """
     def get_wd(self, state1, state2, amp):
-        wd, shift = self.get_wd_helper(state1, state2, amp, wd_res=0.1, base_shift=0)
-        print(wd, shift)
-        wd, shift = self.get_wd_helper(state1, state2, amp, wd_res=0.01, base_shift=shift)
-        print(wd, shift)
-        wd, shift = self.get_wd_helper(state1, state2, amp, wd_res=0.001, base_shift=shift)
-        print(wd, shift)
+        # very important to take abs val!
+        wd_base = np.abs(self.get_base_wd(state1, state2))
+        wd = self.get_wd_helper(state1, state2, amp, wd0=wd_base, wd_res=0.1)
+        wd = self.get_wd_helper(state1, state2, amp, wd0=wd, wd_res=0.01)
+        wd = self.get_wd_helper(state1, state2, amp, wd0=wd, wd_res=0.001)
+        print('updated wd from', wd_base/2/np.pi, 'to', wd/2/np.pi)
         return wd
 
     """
@@ -274,14 +277,14 @@ class QSwitch():
     Add a pi pulse between state1 and state2 immediately after the previous pulse
     t_pulse_factor multiplies t_pulse to get the final pulse length
     """
-    def add_sequential_pi_pulse(self, seq, state1, state2, amp, t_pulse=None, t_pulse_factor=1):
-        self.add_const_pi_pulse(seq, state1, state2, amp, t_pulse=t_pulse, t_pulse_factor=t_pulse_factor)
+    def add_sequential_pi_pulse(self, seq, state1, state2, amp, t_pulse=None, t_rise=1, t_pulse_factor=1):
+        self.add_const_pi_pulse(seq, state1, state2, amp, t_pulse=t_pulse, t_rise=t_rise, t_pulse_factor=t_pulse_factor)
 
     """
     Add a pi pulse between state1 and state2 at time offset from the beginning of the 
     previous pulse
     """
-    def add_const_pi_pulse(self, seq, state1, state2, amp, wd=0, t_offset=0, t_pulse=None, t_pulse_factor=1):
+    def add_const_pi_pulse(self, seq, state1, state2, amp, wd=0, t_offset=0, t_pulse=None, t_rise=1, t_pulse_factor=1):
         if t_pulse == None: t_pulse = self.get_Tpi(state1, state2, amp=amp)
         t_pulse *= t_pulse_factor
         if wd == 0: wd = self.get_wd(state1, state2, amp)
@@ -290,6 +293,7 @@ class QSwitch():
             amp=amp,
             t_pulse=t_pulse,
             t_start=-t_offset,
+            t_rise=t_rise,
             )
 
     """
