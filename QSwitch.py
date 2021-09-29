@@ -245,8 +245,7 @@ class QSwitch():
                 best_wd = wd
         if n == max_it: print("Too many iterations, try lower resolution!")
 
-        print('\tfinal overlap', best_overlap, 'wd', best_wd)
-        return best_wd
+        return best_wd, best_overlap
 
     """
     Fine-tuned drive frequency taking into account stark shift from drive,
@@ -256,9 +255,13 @@ class QSwitch():
     def get_wd(self, state1, state2, amp):
         # very important to take abs val!
         wd_base = np.abs(self.get_base_wd(state1, state2))
-        wd = self.get_wd_helper(state1, state2, amp, wd0=wd_base, wd_res=0.1)
-        wd = self.get_wd_helper(state1, state2, amp, wd0=wd, wd_res=0.01)
-        wd = self.get_wd_helper(state1, state2, amp, wd0=wd, wd_res=0.001)
+        wd = wd_base
+        wd_res = 0.25
+        overlap = 0
+        for it in range(4):
+            if overlap > 0.99: break
+            wd, overlap = self.get_wd_helper(state1, state2, amp, wd0=wd, wd_res=wd_res/(5**it))
+            print('\tnew overlap', overlap, 'wd', wd)
         print('updated wd from', wd_base/2/np.pi, 'to', wd/2/np.pi)
         return wd
 
