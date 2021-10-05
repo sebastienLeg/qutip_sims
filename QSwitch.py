@@ -280,8 +280,8 @@ class QSwitch():
     Add a pi pulse between state1 and state2 immediately after the previous pulse
     t_pulse_factor multiplies t_pulse to get the final pulse length
     """
-    def add_sequential_pi_pulse(self, seq, state1, state2, amp, t_pulse=None, t_rise=1, t_pulse_factor=1):
-        self.add_const_pi_pulse(seq, state1, state2, amp, t_pulse=t_pulse, t_rise=t_rise, t_pulse_factor=t_pulse_factor)
+    def add_sequential_pi_pulse(self, seq, state1, state2, amp, wd=0, t_pulse=None, t_rise=1, t_pulse_factor=1):
+        return self.add_const_pi_pulse(seq, state1, state2, amp, wd=wd, t_pulse=t_pulse, t_rise=t_rise, t_pulse_factor=t_pulse_factor)
 
     """
     Add a pi pulse between state1 and state2 at time offset from the beginning of the 
@@ -298,6 +298,7 @@ class QSwitch():
             t_start=-t_offset,
             t_rise=t_rise,
             )
+        return wd
 
     """
     Assemble the H_solver with a given pulse sequence to be put into mesolve
