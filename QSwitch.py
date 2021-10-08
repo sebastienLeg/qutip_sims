@@ -83,6 +83,7 @@ class QSwitch():
         # This assumes time dependence given by sin(wt).
         # If given by exp(+/-iwt), need to divide by 2.
         self.drive_op = 2*np.pi* (b.dag()+b)
+        # self.drive_op = 2*np.pi* (a.dag()+a)
 
     """
     H (not incl H_drive) in the rotating frame of a drive at wd
