@@ -82,7 +82,12 @@ class QSwitch():
         # Time independent drive op w/o drive amp.
         # This assumes time dependence given by sin(wt).
         # If given by exp(+/-iwt), need to divide by 2.
-        self.drive_op = 2*np.pi* (b.dag()+b)
+        self.drive_ops = [
+            2*np.pi*(a.dag()+a),
+            2*np.pi*(b.dag()+b),
+            2*np.pi*(c.dag()+c),
+            2*np.pi*(d.dag()+d)
+            ]
         # self.drive_op = 2*np.pi* (a.dag()+a)
 
     """
@@ -163,11 +168,8 @@ class QSwitch():
         for evec in tqdm(evecs):
             i = tuple(self.find_bare(evec)[0])
             seen[i] += 1
-            if seen[i] != 1 and sum(i) <= n:
-                print(f'Mapped dressed state to {self.level_nums_to_name(i)} {seen[i]} times!!')
-                return False
-        print("Good enough for dressed states mappings.")
-        return True
+            assert seen[i] == 1 or sum(i) > n, f'Mapped dressed state to {self.level_nums_to_name(i)} {seen[i]} times!!'
+        print("Good enough for dressed states mappings. :)")
 
     def state(self, levels, esys=None):
         return self.find_dressed(self.make_bare(levels), esys=esys)[2]
@@ -189,22 +191,23 @@ class QSwitch():
     wd_res: resolution of wd sweeping (angular freq)
     base_shift: base stark shift to try
     max_it: max number of iterations when searching for shifts
+    drive_qubit: 0, 1, 2, or 3
     Reference: Zeytinoglu 2015, Gideon's brute stark code
     """
-    def max_overlap_H_tot_rot(self, state, amp, wd):
+    def max_overlap_H_tot_rot(self, state, amp, wd, drive_qubit=1):
         # note factor of 1/2 in front of amp since in rotating frame, assumes
         # written as a*exp(+iwt) + a.dag()*exp(-iwt)
-        H_tot_rot = self.H_rot(wd) + amp/2 *self.drive_op
+        H_tot_rot = self.H_rot(wd) + amp/2*self.drive_ops[drive_qubit]
         return self.find_dressed(state, esys=H_tot_rot.eigenstates())[1]
-    def get_wd_helper(self, state1, state2, amp, wd0, wd_res=0.01, max_it=100):
+    def get_wd_helper(self, state1, state2, amp, wd0, drive_qubit, wd_res=0.01, max_it=100):
         psi1 = self.state(state1) # dressed
         psi2 = self.state(state2) # dressed
         plus = 1/np.sqrt(2) * (psi1 + psi2)
         minus = 1/np.sqrt(2) * (psi1 - psi2)
 
         # initial
-        overlap_plus = self.max_overlap_H_tot_rot(plus, amp, wd0)
-        overlap_minus = self.max_overlap_H_tot_rot(minus, amp, wd0)
+        overlap_plus = self.max_overlap_H_tot_rot(plus, amp, wd0, drive_qubit=drive_qubit)
+        overlap_minus = self.max_overlap_H_tot_rot(minus, amp, wd0, drive_qubit=drive_qubit)
         avg_overlap = np.mean((overlap_plus, overlap_minus))
         best_overlap = avg_overlap
         best_wd = wd0
@@ -218,8 +221,8 @@ class QSwitch():
             psi2 = self.state(state2, esys=esys_rot) # dressed
             plus = 1/np.sqrt(2) * (psi1 + psi2)
             minus = 1/np.sqrt(2) * (psi1 - psi2)
-            overlap_plus = self.max_overlap_H_tot_rot(plus, amp, wd)
-            overlap_minus = self.max_overlap_H_tot_rot(minus, amp, wd)
+            overlap_plus = self.max_overlap_H_tot_rot(plus, amp, wd, drive_qubit=drive_qubit)
+            overlap_minus = self.max_overlap_H_tot_rot(minus, amp, wd, drive_qubit=drive_qubit)
             avg_overlap = np.mean((overlap_plus, overlap_minus))
             # print('positive n', n, 'wd', wd, 'wd_res', wd_res, 'overlap', overlap_plus, overlap_minus)
             if avg_overlap < best_overlap:
@@ -235,8 +238,8 @@ class QSwitch():
             esys_rot = self.H_rot(wd).eigenstates()
             plus = 1/np.sqrt(2) * (psi1 + psi2)
             minus = 1/np.sqrt(2) * (psi1 - psi2)
-            overlap_plus = self.max_overlap_H_tot_rot(plus, amp, wd)
-            overlap_minus = self.max_overlap_H_tot_rot(minus, amp, wd)
+            overlap_plus = self.max_overlap_H_tot_rot(plus, amp, wd, drive_qubit=drive_qubit)
+            overlap_minus = self.max_overlap_H_tot_rot(minus, amp, wd, drive_qubit=drive_qubit)
             avg_overlap = np.mean((overlap_plus, overlap_minus))
             # print('negative n', n, 'wd', wd, 'wd_res', wd_res, 'overlap', avg_overlap)
             if avg_overlap < best_overlap:
@@ -253,7 +256,7 @@ class QSwitch():
     analyzed with 3 different steps of increasingly small resolution
     Reference: Gideon's brute stark code
     """
-    def get_wd(self, state1, state2, amp):
+    def get_wd(self, state1, state2, amp, drive_qubit=1):
         # very important to take abs val!
         wd_base = np.abs(self.get_base_wd(state1, state2))
         wd = wd_base
@@ -261,7 +264,7 @@ class QSwitch():
         overlap = 0
         for it in range(4):
             if overlap > 0.99: break
-            wd, overlap = self.get_wd_helper(state1, state2, amp, wd0=wd, wd_res=wd_res/(5**it))
+            wd, overlap = self.get_wd_helper(state1, state2, amp, wd0=wd, drive_qubit=drive_qubit, wd_res=wd_res/(5**it))
             print('\tnew overlap', overlap, 'wd', wd)
         print('updated wd from', wd_base/2/np.pi, 'to', wd/2/np.pi)
         return wd
@@ -269,10 +272,10 @@ class QSwitch():
     """
     Pi pulse length b/w state1 and state2 (strings representing state)
     """
-    def get_Tpi(self, state1, state2, amp):
+    def get_Tpi(self, state1, state2, amp, drive_qubit=1):
         psi0 = self.state(state1)
         psi1 = self.state(state2)
-        g_eff = psi0.dag() * amp * self.drive_op * psi1 /2/np.pi
+        g_eff = psi0.dag() * amp * self.drive_ops[drive_qubit] * psi1 /2/np.pi
         g_eff = np.abs(g_eff[0][0][0])
         if g_eff == 0: return -1
         return 1/2/g_eff
@@ -281,21 +284,22 @@ class QSwitch():
     Add a pi pulse between state1 and state2 immediately after the previous pulse
     t_pulse_factor multiplies t_pulse to get the final pulse length
     """
-    def add_sequential_pi_pulse(self, seq, state1, state2, amp, wd=0, t_pulse=None, t_rise=1, t_pulse_factor=1):
-        return self.add_const_pi_pulse(seq, state1, state2, amp, wd=wd, t_pulse=t_pulse, t_rise=t_rise, t_pulse_factor=t_pulse_factor)
+    def add_sequential_pi_pulse(self, seq, state1, state2, amp, drive_qubit=1, wd=0, t_pulse=None, t_rise=1, t_pulse_factor=1):
+        return self.add_const_pi_pulse(seq, state1, state2, amp, drive_qubit=drive_qubit, wd=wd, t_pulse=t_pulse, t_rise=t_rise, t_pulse_factor=t_pulse_factor)
 
     """
     Add a pi pulse between state1 and state2 at time offset from the beginning of the 
     previous pulse
     """
-    def add_const_pi_pulse(self, seq, state1, state2, amp, wd=0, t_offset=0, t_pulse=None, t_rise=1, t_pulse_factor=1):
-        if t_pulse == None: t_pulse = self.get_Tpi(state1, state2, amp=amp)
+    def add_const_pi_pulse(self, seq, state1, state2, amp, drive_qubit=1, wd=0, t_offset=0, t_pulse=None, t_rise=1, t_pulse_factor=1):
+        if t_pulse == None: t_pulse = self.get_Tpi(state1, state2, amp=amp, drive_qubit=drive_qubit)
         t_pulse *= t_pulse_factor
-        if wd == 0: wd = self.get_wd(state1, state2, amp)
+        if wd == 0: wd = self.get_wd(state1, state2, amp, drive_qubit=drive_qubit)
         seq.const_pulse(
             wd=wd,
             amp=amp,
             t_pulse=t_pulse,
+            drive_qubit=drive_qubit,
             t_start=-t_offset,
             t_rise=t_rise,
             )
@@ -305,14 +309,21 @@ class QSwitch():
     Assemble the H_solver with a given pulse sequence to be put into mesolve
     """ 
     def H_solver(self, seq:PulseSequence):
-        return [self.H, [self.drive_op, seq.pulse]]
-    def H_solver_array(self, seq:PulseSequence, times):
-        # WARNING: need to sample at short enough times for drive frequency
-        return [self.H, 
-        [self.drive_op, np.array([seq.pulse(t, None) for t in times])]
-        ]
+        H_solver = [self.H]
+        for pulse_i, pulse_func in enumerate(seq.get_pulse_seq()):
+            H_solver.append([self.drive_ops[seq.drive_qubits[pulse_i]], pulse_func])
+        return H_solver
+    # def H_solver_array(self, seq:PulseSequence, times):
+    #     # WARNING: need to sample at short enough times for drive frequency
+    #     return [self.H, 
+    #     [self.drive_op, np.array([seq.pulse(t, None) for t in times])]
+    #     ]
     def H_solver_str(self, seq:PulseSequence):
-        return [self.H, [self.drive_op, seq.get_pulse_str()]]
+        H_solver = [self.H]
+        pulse_str_drive_qubit = seq.get_pulse_str()
+        for drive_qubit, pulse_str in enumerate(pulse_str_drive_qubit):
+            H_solver.append([self.drive_ops[drive_qubit], pulse_str])
+        return H_solver
 
 
 if __name__ == "__main__":

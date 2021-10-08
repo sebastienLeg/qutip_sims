@@ -10,6 +10,7 @@ class PulseSequence:
     def __init__(self, start_time=0):
         self.pulse_seq = []
         self.envelope_seq = []
+        self.drive_qubits = []
         self.pulse_lengths = []
         self.pulse_freqs = [] # pulse frequencies (real freq, not omega)
         self.pulse_strs = [] # cython strs for pulses
@@ -22,6 +23,9 @@ class PulseSequence:
     def get_envelope_seq(self):
         return self.envelope_seq
 
+    def get_drive_qubits(self):
+        return self.drive_qubits
+
     def get_pulse_lengths(self):
         return self.pulse_lengths
 
@@ -29,10 +33,10 @@ class PulseSequence:
         return self.pulse_freqs
 
     def get_pulse_str(self):
-        final_pulse_str = self.pulse_strs[0]
-        for pulse_str in self.pulse_strs[1:]:
-            final_pulse_str += '+' + pulse_str
-        return final_pulse_str
+        pulse_str_drive_qubit = ['0']*4
+        for pulse_i, pulse_str in enumerate(self.pulse_strs):
+            pulse_str_drive_qubit[self.drive_qubits[pulse_i]] += '+' + pulse_str
+        return pulse_str_drive_qubit
 
     """
     Advance current time by t (marker indicating end of last pulse)
@@ -53,7 +57,7 @@ class PulseSequence:
     t_start is offset from the end of the last pulse.
     Returns the total length of the sequence.
     """
-    def const_pulse(self, wd, amp, t_pulse, t_start=0, t_rise=1):
+    def const_pulse(self, wd, amp, t_pulse, drive_qubit=1, t_start=0, t_rise=1):
         t_start = self.time - t_start
         def envelope(t):
                 t -= t_start 
@@ -72,6 +76,7 @@ class PulseSequence:
 
         self.pulse_strs.append(c_str)
         self.envelope_seq.append(envelope)
+        self.drive_qubits.append(drive_qubit)
         self.pulse_seq.append(drive_func)
         self.pulse_lengths.append(t_pulse)
         self.pulse_freqs.append(wd/2/np.pi)
@@ -81,7 +86,7 @@ class PulseSequence:
     Adds the drive_func corresponding to a gaussian pulse to the sequence.
     Returns the total length of the sequence.
     """
-    def gaussian_pulse(self, wd, amp, t_pulse_sigma, t_start=0):
+    def gaussian_pulse(self, wd, amp, t_pulse_sigma, drive_qubit=1, t_start=0):
         t_start = self.time - t_start
         def envelope(t):
                 t_max = t_start + 3*t_pulse_sigma
@@ -90,6 +95,7 @@ class PulseSequence:
             return envelope(t)*np.sin(wd*t)
         self.envelope_seq.append(envelope)
         self.pulse_seq.append(drive_func)
+        self.drive_qubits.apppend(drive_qubit)
         self.pulse_lengths.append(6*t_pulse_sigma)
         self.pulse_freqs.append(wd/2/np.pi)
         self.time = t_start + 6*t_pulse_sigma
