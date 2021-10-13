@@ -179,7 +179,7 @@ class QSwitch():
     Stark shift from drive is ignored
     """
     def get_base_wd(self, state1, state2, esys=None):
-        return qt.expect(self.H, self.state(state1, esys=esys)) - qt.expect(self.H, self.state(state2, esys=esys))
+        return np.abs(qt.expect(self.H, self.state(state1, esys=esys)) - qt.expect(self.H, self.state(state2, esys=esys)))
 
     """
     Fine-tuned drive frequency taking into account stark shift from drive
@@ -256,17 +256,16 @@ class QSwitch():
     analyzed with 3 different steps of increasingly small resolution
     Reference: Gideon's brute stark code
     """
-    def get_wd(self, state1, state2, amp, drive_qubit=1):
-        # very important to take abs val!
-        wd_base = np.abs(self.get_base_wd(state1, state2))
+    def get_wd(self, state1, state2, amp, drive_qubit=1, verbose=True):
+        wd_base = self.get_base_wd(state1, state2)
         wd = wd_base
         wd_res = 0.25
         overlap = 0
         for it in range(4):
             if overlap > 0.99: break
             wd, overlap = self.get_wd_helper(state1, state2, amp, wd0=wd, drive_qubit=drive_qubit, wd_res=wd_res/(5**it))
-            print('\tnew overlap', overlap, 'wd', wd)
-        print('updated wd from', wd_base/2/np.pi, 'to', wd/2/np.pi)
+            if verbose: print('\tnew overlap', overlap, 'wd', wd)
+        if verbose: print('updated drive freq (GHz) from', wd_base/2/np.pi, 'to', wd/2/np.pi)
         return wd
 
     """
@@ -291,19 +290,74 @@ class QSwitch():
     Add a pi pulse between state1 and state2 at time offset from the beginning of the 
     previous pulse
     """
-    def add_const_pi_pulse(self, seq, state1, state2, amp, drive_qubit=1, wd=0, t_offset=0, t_pulse=None, t_rise=1, t_pulse_factor=1):
+    def add_const_pi_pulse(
+        self, seq:PulseSequence, state1:str, state2:str, amp,
+        drive_qubit=1, wd=0,
+        t_offset=0, t_pulse=None, t_rise=1, t_pulse_factor=1, verbose=True
+        ):
         if t_pulse == None: t_pulse = self.get_Tpi(state1, state2, amp=amp, drive_qubit=drive_qubit)
         t_pulse *= t_pulse_factor
-        if wd == 0: wd = self.get_wd(state1, state2, amp, drive_qubit=drive_qubit)
+        if wd == 0: wd = self.get_wd(state1, state2, amp, drive_qubit=drive_qubit, verbose=verbose)
         seq.const_pulse(
             wd=wd,
             amp=amp,
             t_pulse=t_pulse,
+            pulse_levels=(state1, state2),
             drive_qubit=drive_qubit,
             t_start=-t_offset,
             t_rise=t_rise,
             )
         return wd
+
+    """
+    Check for  clashing levels.
+    tolerance: frequency tolerance for clashing levels (GHz, real freq)
+    """
+    def check_level_resonances(self, seq:PulseSequence, tolerance=0.050):
+        pulse_names = seq.get_pulse_names(simplified=True)
+        pulse_amps = seq.get_pulse_amps(simplified=True)
+        good_freqs = seq.get_pulse_freqs(simplified=True)
+        drive_qubits = seq.get_drive_qubits(simplified=True)
+
+        # maps pulse to list of close-by pulses which has form (pulse name, freq)
+        problem_pulses = dict()
+
+        # look for resonant 1 and 2 photon transitions
+        for good_pulse, good_freq in good_freqs.items():
+            these_problem_pulses = dict()
+            for psi0 in good_pulse:
+                psi0_ids = self.level_name_to_nums(psi0)
+
+                # loop through all possible levels to transition to,
+                # starting from either end of the good pulse
+                for i1 in range(self.cutoffs[0]):
+                    for i2 in range(self.cutoffs[1]):
+                        for i3 in range(self.cutoffs[2]):
+                            for i4 in range(self.cutoffs[3]):
+                                psi1_ids = [i1,i2,i3,i4]
+                                psi1 = self.level_nums_to_name(psi1_ids)
+                                pulse = (min(psi0,psi1), max(psi0,psi1)) # write in alphabetical order
+
+                                # don't count the reference pulses
+                                if pulse in pulse_names: continue
+
+                                # don't repeat count
+                                if pulse in these_problem_pulses.keys():
+                                    print('here')
+                                    continue
+
+                                # 1 or 2 photon transitions
+                                n_excite = np.abs(sum(psi1_ids)-sum(psi0_ids))
+                                if not 1 <= n_excite <= 2: continue
+                                if n_excite != 1 and n_excite != 2: continue
+
+                                this_freq = self.get_base_wd(*pulse)/2/np.pi
+                                if min(np.abs(this_freq - good_freq), np.abs(2*this_freq - good_freq)) > tolerance: continue
+                                if self.get_Tpi(*pulse, pulse_amps[good_pulse], drive_qubit=drive_qubits[good_pulse]) > 1000: continue # coupling too small to care
+                                these_problem_pulses.update({pulse:this_freq})
+            if len(these_problem_pulses.items()) > 0:
+                problem_pulses.update({good_pulse:these_problem_pulses})
+        return problem_pulses
 
     """
     Assemble the H_solver with a given pulse sequence to be put into mesolve

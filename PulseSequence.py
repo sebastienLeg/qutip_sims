@@ -1,5 +1,6 @@
 import numpy as np
 import qutip as qt
+from typing import List, Set, Dict, Tuple
 
 # Gaussian with amp = 1
 def gaussian(x, sigma):
@@ -15,7 +16,8 @@ class PulseSequence:
         self.pulse_freqs = [] # pulse frequencies (real freq, not omega)
         self.pulse_strs = [] # cython strs for pulses
         self.time = start_time
-
+        self.pulse_names = [] # list of tuples, every tuple is the levels b/w which the pulse operates, alphabetically listed
+        self.amps = [] # list of amplitudes
 
     def get_pulse_seq(self):
         return self.pulse_seq
@@ -23,20 +25,46 @@ class PulseSequence:
     def get_envelope_seq(self):
         return self.envelope_seq
 
-    def get_drive_qubits(self):
-        return self.drive_qubits
+    def get_pulse_names(self, simplified=False):
+        if not simplified: return self.pulse_names
+        else: return list(set(self.pulse_names))
+
+    def get_drive_qubits(self, simplified=False):
+        if not simplified: return self.drive_qubits
+        else:
+            pulse_to_drive_qubits = dict()
+            for i, pulse in enumerate(self.pulse_names):
+                if pulse in pulse_to_drive_qubits: continue
+                pulse_to_drive_qubits.update({pulse:self.drive_qubits[i]})
+            return pulse_to_drive_qubits
 
     def get_pulse_lengths(self):
         return self.pulse_lengths
 
-    def get_pulse_freqs(self):
-        return self.pulse_freqs
+    def get_pulse_freqs(self, simplified=False):
+        if not simplified: return self.pulse_freqs
+        else:
+            pulse_to_freqs = dict()
+            for i, pulse in enumerate(self.pulse_names):
+                if pulse in pulse_to_freqs: continue
+                pulse_to_freqs.update({pulse:self.pulse_freqs[i]})
+            return pulse_to_freqs
+
+    def get_pulse_amps(self, simplified=False):
+        if not simplified: return self.amps
+        else:
+            pulse_to_amps = dict()
+            for i, pulse in enumerate(self.pulse_names):
+                if pulse in pulse_to_amps: continue
+                pulse_to_amps.update({pulse:self.amps[i]})
+            return pulse_to_amps
 
     def get_pulse_str(self):
         pulse_str_drive_qubit = ['0']*4
         for pulse_i, pulse_str in enumerate(self.pulse_strs):
             pulse_str_drive_qubit[self.drive_qubits[pulse_i]] += '+' + pulse_str
         return pulse_str_drive_qubit
+
 
     """
     Advance current time by t (marker indicating end of last pulse)
@@ -57,7 +85,7 @@ class PulseSequence:
     t_start is offset from the end of the last pulse.
     Returns the total length of the sequence.
     """
-    def const_pulse(self, wd, amp, t_pulse, drive_qubit=1, t_start=0, t_rise=1):
+    def const_pulse(self, wd, amp, t_pulse, pulse_levels:Tuple[str,str], drive_qubit=1, t_start=0, t_rise=1):
         t_start = self.time - t_start
         def envelope(t):
                 t -= t_start 
@@ -81,12 +109,14 @@ class PulseSequence:
         self.pulse_lengths.append(t_pulse)
         self.pulse_freqs.append(wd/2/np.pi)
         self.time = t_start + t_pulse
+        self.pulse_names.append((min(pulse_levels), max(pulse_levels)))
+        self.amps.append(amp)
 
     """
     Adds the drive_func corresponding to a gaussian pulse to the sequence.
     Returns the total length of the sequence.
     """
-    def gaussian_pulse(self, wd, amp, t_pulse_sigma, drive_qubit=1, t_start=0):
+    def gaussian_pulse(self, wd, amp, t_pulse_sigma, pulse_levels:Tuple[str,str], drive_qubit=1, t_start=0):
         t_start = self.time - t_start
         def envelope(t):
                 t_max = t_start + 3*t_pulse_sigma
@@ -99,3 +129,5 @@ class PulseSequence:
         self.pulse_lengths.append(6*t_pulse_sigma)
         self.pulse_freqs.append(wd/2/np.pi)
         self.time = t_start + 6*t_pulse_sigma
+        self.pulse_names.append((min(pulse_levels), max(pulse_levels)))
+        self.amps.append(amp)
