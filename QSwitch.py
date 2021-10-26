@@ -178,8 +178,10 @@ class QSwitch():
     Drive frequency b/w state1 and state2 (strings representing state) 
     Stark shift from drive is ignored
     """
-    def get_base_wd(self, state1, state2, esys=None):
-        return np.abs(qt.expect(self.H, self.state(state1, esys=esys)) - qt.expect(self.H, self.state(state2, esys=esys)))
+    def get_base_wd(self, state1, state2, keep_sign=False, esys=None):
+        wd = qt.expect(self.H, self.state(state1, esys=esys)) - qt.expect(self.H, self.state(state2, esys=esys))
+        if keep_sign: return wd
+        return np.abs(wd)
 
     """
     Fine-tuned drive frequency taking into account stark shift from drive
@@ -276,7 +278,7 @@ class QSwitch():
         psi1 = self.state(state2)
         g_eff = psi0.dag() * amp * self.drive_ops[drive_qubit] * psi1 /2/np.pi
         g_eff = np.abs(g_eff[0][0][0])
-        if g_eff == 0: return -1
+        if g_eff == 0: return np.inf
         return 1/2/g_eff
 
     """
@@ -338,8 +340,7 @@ class QSwitch():
                                 psi1 = self.level_nums_to_name(psi1_ids)
                                 pulse = (min(psi0,psi1), max(psi0,psi1)) # write in alphabetical order
 
-                                # don't count the reference pulses
-                                if pulse in pulse_names: continue
+                                if pulse == good_pulse: continue
 
                                 # don't repeat count
                                 if pulse in these_problem_pulses.keys():
@@ -351,8 +352,8 @@ class QSwitch():
                                 if not 1 <= n_excite <= 2: continue
                                 if n_excite != 1 and n_excite != 2: continue
 
-                                this_freq = self.get_base_wd(*pulse)/2/np.pi
-                                if min(np.abs(this_freq - good_freq), np.abs(2*this_freq - good_freq)) > tolerance: continue
+                                this_freq = self.get_base_wd(*pulse, keep_sign=True)/2/np.pi
+                                if min(np.abs(np.abs(this_freq) - np.abs(good_freq)), np.abs(2*np.abs(this_freq) - np.abs(good_freq))) > tolerance: continue
                                 if self.get_Tpi(*pulse, pulse_amps[good_pulse], drive_qubit=drive_qubits[good_pulse]) > 1000: continue # coupling too small to care
                                 these_problem_pulses.update({pulse:this_freq})
             if len(these_problem_pulses.items()) > 0:
