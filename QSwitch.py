@@ -88,7 +88,6 @@ class QSwitch():
             2*np.pi*(c.dag()+c),
             2*np.pi*(d.dag()+d)
             ]
-        # self.drive_op = 2*np.pi* (a.dag()+a)
 
     """
     H (not incl H_drive) in the rotating frame of a drive at wd
@@ -98,6 +97,10 @@ class QSwitch():
     def H_rot(self, wd):
         a, b, c, d = (self.a, self.b, self.c, self.d)
         return self.H - wd*(a.dag()*a + b.dag()*b + c.dag()*c + d.dag()*d)
+
+    # ======================================= #
+    # Working with states
+    # ======================================= #
 
     def level_name_to_nums(self, name):
         state = []
@@ -159,7 +162,7 @@ class QSwitch():
         return qt.tensor(*prod)
 
     """
-    Check up to 3 excitations that states are mapped 1:1
+    Check up to n excitations that states are mapped 1:1
     (if failed, probably couplings are too strong)
     """
     def check_state_mapping(self, n):
@@ -174,6 +177,9 @@ class QSwitch():
     def state(self, levels, esys=None):
         return self.find_dressed(self.make_bare(levels), esys=esys)[2]
 
+    # ======================================= #
+    # Getting the right pulse frequencies
+    # ======================================= #
     """
     Drive frequency b/w state1 and state2 (strings representing state) 
     Stark shift from drive is ignored
@@ -202,8 +208,9 @@ class QSwitch():
         H_tot_rot = self.H_rot(wd) + amp/2*self.drive_ops[drive_qubit]
         return self.find_dressed(state, esys=H_tot_rot.eigenstates())[1]
     def get_wd_helper(self, state1, state2, amp, wd0, drive_qubit, wd_res=0.01, max_it=100):
-        psi1 = self.state(state1) # dressed
-        psi2 = self.state(state2) # dressed
+        esys_rot = self.H_rot(wd0).eigenstates()
+        psi1 = self.state(state1, esys=esys_rot) # dressed
+        psi2 = self.state(state2, esys=esys_rot) # dressed
         plus = 1/np.sqrt(2) * (psi1 + psi2)
         minus = 1/np.sqrt(2) * (psi1 - psi2)
 
@@ -213,7 +220,7 @@ class QSwitch():
         avg_overlap = np.mean((overlap_plus, overlap_minus))
         best_overlap = avg_overlap
         best_wd = wd0
-        # print('init overlap', overlap_plus, overlap_minus)
+        # print('init overlap', best_overlap)
 
         # trying positive shifts
         for n in range(1, max_it+1):
@@ -226,8 +233,8 @@ class QSwitch():
             overlap_plus = self.max_overlap_H_tot_rot(plus, amp, wd, drive_qubit=drive_qubit)
             overlap_minus = self.max_overlap_H_tot_rot(minus, amp, wd, drive_qubit=drive_qubit)
             avg_overlap = np.mean((overlap_plus, overlap_minus))
-            # print('positive n', n, 'wd', wd, 'wd_res', wd_res, 'overlap', overlap_plus, overlap_minus)
             if avg_overlap < best_overlap:
+                # print('positive n', n, 'wd', wd, 'wd_res', wd_res, 'overlap', avg_overlap)
                 break
             else:
                 best_overlap = avg_overlap
@@ -243,8 +250,8 @@ class QSwitch():
             overlap_plus = self.max_overlap_H_tot_rot(plus, amp, wd, drive_qubit=drive_qubit)
             overlap_minus = self.max_overlap_H_tot_rot(minus, amp, wd, drive_qubit=drive_qubit)
             avg_overlap = np.mean((overlap_plus, overlap_minus))
-            # print('negative n', n, 'wd', wd, 'wd_res', wd_res, 'overlap', avg_overlap)
             if avg_overlap < best_overlap:
+                # print('negative n', n, 'wd', wd, 'wd_res', wd_res, 'overlap', avg_overlap)
                 break
             else:
                 best_overlap = avg_overlap
@@ -263,15 +270,22 @@ class QSwitch():
         wd = wd_base
         wd_res = 0.25
         overlap = 0
-        for it in range(4):
-            if overlap > 0.99: break
-            wd, overlap = self.get_wd_helper(state1, state2, amp, wd0=wd, drive_qubit=drive_qubit, wd_res=wd_res/(5**it))
-            if verbose: print('\tnew overlap', overlap, 'wd', wd)
+        it = 0
+        while overlap < 0.99:
+            if it >= 7: break
+            if wd_res < 1e-6: break
+            old_overlap = overlap
+            wd, overlap = self.get_wd_helper(state1, state2, amp, wd0=wd, drive_qubit=drive_qubit, wd_res=wd_res)
+            if verbose: print('\tnew overlap', overlap, 'wd', wd, 'wd_res', wd_res)
+            if overlap == old_overlap: wd_res /= 10
+            else: wd_res /= 5
+            it += 1
         if verbose: print('updated drive freq (GHz) from', wd_base/2/np.pi, 'to', wd/2/np.pi)
         return wd
 
     """
     Pi pulse length b/w state1 and state2 (strings representing state)
+    amp: freq
     """
     def get_Tpi(self, state1, state2, amp, drive_qubit=1):
         psi0 = self.state(state1)
@@ -324,14 +338,16 @@ class QSwitch():
         # maps pulse to list of close-by pulses which has form (pulse name, freq)
         problem_pulses = dict()
 
-        # look for resonant 1 and 2 photon transitions
+        # Checks that any pulse a<->b is not resonant with a<->anything or b<->anything
+        # (1 or 2 photon transitions), and pulse a<->b is not resonant with any of the other good freq.
+        # Note that depending on the pulse sequence, it may not be a bad thing to be resonant with
+        # another good freq.
         for good_pulse, good_freq in good_freqs.items():
             these_problem_pulses = dict()
             for psi0 in good_pulse:
                 psi0_ids = self.level_name_to_nums(psi0)
 
-                # loop through all possible levels to transition to,
-                # starting from either end of the good pulse
+                # Loop through all possible levels to transition to, starting from either end of the good pulse
                 for i1 in range(self.cutoffs[0]):
                     for i2 in range(self.cutoffs[1]):
                         for i3 in range(self.cutoffs[2]):
@@ -342,10 +358,8 @@ class QSwitch():
 
                                 if pulse == good_pulse: continue
 
-                                # don't repeat count
-                                if pulse in these_problem_pulses.keys():
-                                    print('here')
-                                    continue
+                                # Don't repeat count
+                                if pulse in these_problem_pulses.keys(): continue
 
                                 # 1 or 2 photon transitions
                                 n_excite = np.abs(sum(psi1_ids)-sum(psi0_ids))
@@ -353,32 +367,75 @@ class QSwitch():
                                 if n_excite != 1 and n_excite != 2: continue
 
                                 this_freq = self.get_base_wd(*pulse, keep_sign=True)/2/np.pi
-                                if min(np.abs(np.abs(this_freq) - np.abs(good_freq)), np.abs(2*np.abs(this_freq) - np.abs(good_freq))) > tolerance: continue
-                                if self.get_Tpi(*pulse, pulse_amps[good_pulse], drive_qubit=drive_qubits[good_pulse]) > 1000: continue # coupling too small to care
+                                freq_diff_1photon = np.abs(np.abs(this_freq) - np.abs(good_freq))
+                                freq_diff_2photon = np.abs(2*np.abs(this_freq) - np.abs(good_freq))
+                                if min(freq_diff_1photon, freq_diff_2photon) > tolerance: continue
+
+                                # Check if coupling too small to care
+                                if self.get_Tpi(
+                                    *pulse, pulse_amps[good_pulse], drive_qubit=drive_qubits[good_pulse]) > 1000: continue
                                 these_problem_pulses.update({pulse:this_freq})
+                
+                # Compare to other good freqs
+                for pulse, this_freq in good_freqs.items():
+                    if pulse == good_pulse: continue
+                    if pulse in these_problem_pulses.keys(): continue
+                    if np.abs(np.abs(good_freq) - np.abs(this_freq)) < tolerance:
+                        these_problem_pulses.update({pulse:this_freq})
             if len(these_problem_pulses.items()) > 0:
                 problem_pulses.update({good_pulse:these_problem_pulses})
         return problem_pulses
 
-    """
-    Assemble the H_solver with a given pulse sequence to be put into mesolve
-    """ 
+    # ======================================= #
+    # Assemble the H_solver with a given pulse sequence to be put into mesolve
+    # ======================================= #
+
     def H_solver(self, seq:PulseSequence):
         H_solver = [self.H]
         for pulse_i, pulse_func in enumerate(seq.get_pulse_seq()):
             H_solver.append([self.drive_ops[seq.drive_qubits[pulse_i]], pulse_func])
         return H_solver
+
     # def H_solver_array(self, seq:PulseSequence, times):
     #     # WARNING: need to sample at short enough times for drive frequency
     #     return [self.H, 
     #     [self.drive_op, np.array([seq.pulse(t, None) for t in times])]
     #     ]
+
     def H_solver_str(self, seq:PulseSequence):
         H_solver = [self.H]
         pulse_str_drive_qubit = seq.get_pulse_str()
         for drive_qubit, pulse_str in enumerate(pulse_str_drive_qubit):
             H_solver.append([self.drive_ops[drive_qubit], pulse_str])
         return H_solver
+
+    def H_solver_rot(self, seq:PulseSequence):
+        assert len(seq.get_pulse_seq()) == 1
+        pulse_i = 0
+        # H_solver = self.H_rot(seq.get_pulse_freqs()[pulse_i])
+        H_solver = self.H_rot(2*np.pi*seq.get_pulse_freqs()[pulse_i]) + seq.get_pulse_amps()[pulse_i]/2*self.drive_ops[seq.get_drive_qubits()[pulse_i]]
+        return H_solver
+
+    # ======================================= #
+    # Time evolution of states
+    # ======================================= #
+    def evolve(self, psi0, seq:PulseSequence, times, c_ops=None, nsteps=1000):
+        if c_ops is None:
+            return qt.mesolve(self.H_solver_str(seq), psi0, times, progress_bar=True, options=qt.Options(nsteps=nsteps)).states
+        else:
+            full_result = qt.mcsolve(self.H_solver_str(seq), psi0, times, c_ops, progress_bar=True, options=qt.Options(nsteps=nsteps))
+            return np.sum(full_result.states, axis=0)/full_result.ntraj
+
+    def evolve_rot_frame(self, psi0, seq:PulseSequence, times, c_ops=None, nsteps=1000):
+        assert c_ops == None
+        if c_ops is None:
+            pulse_i = 0
+            return qt.mesolve(self.H_solver_rot(seq), psi0, times, progress_bar=True, options=qt.Options(nsteps=nsteps)).states
+            # return [result_rot[i] * np.exp(-1j*t*seq.get_pulse_freqs()[pulse_i]) for i, t in enumerate(times)]
+        else:
+            pass
+            # full_result = qt.mcsolve(self.H_solver_str(seq), psi0, times, c_ops, progress_bar=True, options=qt.Options(nsteps=nsteps))
+            # return np.sum(full_result.states, axis=0)/full_result.ntraj
 
 
 if __name__ == "__main__":

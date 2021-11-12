@@ -17,7 +17,7 @@ class PulseSequence:
         self.pulse_strs = [] # cython strs for pulses
         self.time = start_time
         self.pulse_names = [] # list of tuples, every tuple is the levels b/w which the pulse operates, alphabetically listed
-        self.amps = [] # list of amplitudes
+        self.amps = [] # list of amplitudes (real freq, not omega)
 
     def get_pulse_seq(self):
         return self.pulse_seq
@@ -83,6 +83,7 @@ class PulseSequence:
     Adds the drive_func corresponding to a constant pulse with a sin^2
     ramp up/down to the sequence.
     t_start is offset from the end of the last pulse.
+    amp: freq
     Returns the total length of the sequence.
     """
     def const_pulse(self, wd, amp, t_pulse, pulse_levels:Tuple[str,str], drive_qubit=1, t_start=0, t_rise=1):
