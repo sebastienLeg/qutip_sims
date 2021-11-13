@@ -10,7 +10,7 @@ def gaussian(x, sigma):
 class PulseSequence:
     def __init__(self, start_time=0):
         self.pulse_seq = []
-        self.envelope_seq = []
+        self.envelope_seq = [] # normalized envelopes
         self.drive_qubits = []
         self.pulse_lengths = []
         self.pulse_freqs = [] # pulse frequencies (real freq, not omega)
@@ -88,14 +88,14 @@ class PulseSequence:
     """
     def const_pulse(self, wd, amp, t_pulse, pulse_levels:Tuple[str,str], drive_qubit=1, t_start=0, t_rise=1):
         t_start = self.time - t_start
-        def envelope(t):
+        def envelope(t, args=None):
                 t -= t_start 
-                if 0 <= t < t_rise: return amp * np.sin(np.pi*t/2/t_rise)**2
-                elif t_rise <= t < t_pulse - t_rise: return amp
-                elif t_pulse - t_rise <= t < t_pulse: return amp*np.sin(np.pi*(t_pulse-t)/2/t_rise)**2
+                if 0 <= t < t_rise: return np.sin(np.pi*t/2/t_rise)**2
+                elif t_rise <= t < t_pulse - t_rise: return 1
+                elif t_pulse - t_rise <= t < t_pulse: return np.sin(np.pi*(t_pulse-t)/2/t_rise)**2
                 else: return 0 
-        def drive_func(t, args):
-            return envelope(t)*np.sin(wd*t)
+        def drive_func(t, args=None):
+            return amp*envelope(t)*np.sin(wd*t)
 
         c_str = f'({amp}) * sin(({wd})*t) * ('
         c_str += f'sin(pi*(t-({t_start}))/2/({t_rise}))*sin(pi*(t-({t_start}))/2/({t_rise})) * (np.heaviside(t-({t_start}),0)-np.heaviside(t-({t_start})-({t_rise}),0))'
@@ -121,9 +121,9 @@ class PulseSequence:
         t_start = self.time - t_start
         def envelope(t):
                 t_max = t_start + 3*t_pulse_sigma
-                return amp*gaussian(t - t_max, t_pulse_sigma)
+                return gaussian(t - t_max, t_pulse_sigma)
         def drive_func(t, args):
-            return envelope(t)*np.sin(wd*t)
+            return amp*envelope(t)*np.sin(wd*t)
         self.envelope_seq.append(envelope)
         self.pulse_seq.append(drive_func)
         self.drive_qubits.apppend(drive_qubit)

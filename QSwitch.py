@@ -410,17 +410,22 @@ class QSwitch():
         return H_solver
 
     def H_solver_rot(self, seq:PulseSequence):
-        assert len(seq.get_pulse_seq()) == 1
-        pulse_i = 0
-        # H_solver = self.H_rot(seq.get_pulse_freqs()[pulse_i])
-        H_solver = self.H_rot(2*np.pi*seq.get_pulse_freqs()[pulse_i]) + seq.get_pulse_amps()[pulse_i]/2*self.drive_ops[seq.get_drive_qubits()[pulse_i]]
+        H_solver = []
+        for pulse_i, envelope_func in enumerate(seq.get_envelope_seq()):
+            H_solver.append([
+                self.H_rot(2*np.pi*seq.get_pulse_freqs()[pulse_i])\
+                    + seq.get_pulse_amps()[pulse_i]/2*self.drive_ops[seq.get_drive_qubits()[pulse_i]],
+                envelope_func
+                ])
         return H_solver
 
     # ======================================= #
     # Time evolution of states
     # ======================================= #
-    def evolve(self, psi0, seq:PulseSequence, times, c_ops=None, nsteps=1000):
+    def evolve(self, psi0, seq:PulseSequence, times, c_ops=None, nsteps=1000, use_str_solve=True):
         if c_ops is None:
+            if not use_str_solve:
+                return qt.mesolve(self.H_solver(seq), psi0, times, progress_bar=True, options=qt.Options(nsteps=nsteps)).states
             return qt.mesolve(self.H_solver_str(seq), psi0, times, progress_bar=True, options=qt.Options(nsteps=nsteps)).states
         else:
             full_result = qt.mcsolve(self.H_solver_str(seq), psi0, times, c_ops, progress_bar=True, options=qt.Options(nsteps=nsteps))
@@ -429,9 +434,7 @@ class QSwitch():
     def evolve_rot_frame(self, psi0, seq:PulseSequence, times, c_ops=None, nsteps=1000):
         assert c_ops == None
         if c_ops is None:
-            pulse_i = 0
             return qt.mesolve(self.H_solver_rot(seq), psi0, times, progress_bar=True, options=qt.Options(nsteps=nsteps)).states
-            # return [result_rot[i] * np.exp(-1j*t*seq.get_pulse_freqs()[pulse_i]) for i, t in enumerate(times)]
         else:
             pass
             # full_result = qt.mcsolve(self.H_solver_str(seq), psi0, times, c_ops, progress_bar=True, options=qt.Options(nsteps=nsteps))
