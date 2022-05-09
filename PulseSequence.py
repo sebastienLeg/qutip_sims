@@ -16,6 +16,7 @@ class PulseSequence:
         self.pulse_freqs = [] # pulse frequencies (real freq, not omega)
         self.pulse_strs = [] # cython strs for pulses
         self.time = start_time
+        self.start_times = []
         self.pulse_names = [] # list of tuples, every tuple is the levels b/w which the pulse operates, alphabetically listed
         self.amps = [] # list of amplitudes (real freq, not omega)
 
@@ -40,6 +41,9 @@ class PulseSequence:
 
     def get_pulse_lengths(self):
         return self.pulse_lengths
+
+    def get_start_times(self):
+        return self.start_times
 
     def get_pulse_freqs(self, simplified=False):
         if not simplified: return self.pulse_freqs
@@ -84,10 +88,12 @@ class PulseSequence:
     ramp up/down to the sequence.
     t_start is offset from the end of the last pulse.
     amp: freq
+    phase: radians
     Returns the total length of the sequence.
     """
-    def const_pulse(self, wd, amp, t_pulse, pulse_levels:Tuple[str,str], drive_qubit=1, t_start=0, t_rise=1):
+    def const_pulse(self, wd, amp, t_pulse, pulse_levels:Tuple[str,str], drive_qubit=1, t_start=0, t_rise=1, phase=0):
         t_start = self.time - t_start
+        self.start_times.append(t_start)
         def envelope(t, args=None):
                 t -= t_start 
                 if 0 <= t < t_rise: return np.sin(np.pi*t/2/t_rise)**2
@@ -95,9 +101,9 @@ class PulseSequence:
                 elif t_pulse - t_rise <= t < t_pulse: return np.sin(np.pi*(t_pulse-t)/2/t_rise)**2
                 else: return 0 
         def drive_func(t, args=None):
-            return amp*envelope(t)*np.sin(wd*t)
+            return amp*envelope(t)*np.sin(wd*t - phase)
 
-        c_str = f'({amp}) * sin(({wd})*t) * ('
+        c_str = f'({amp}) * sin(({wd})*t-{phase}) * ('
         c_str += f'sin(pi*(t-({t_start}))/2/({t_rise}))*sin(pi*(t-({t_start}))/2/({t_rise})) * (np.heaviside(t-({t_start}),0)-np.heaviside(t-({t_start})-({t_rise}),0))'
         c_str += f' + (np.heaviside(t-({t_start})-({t_rise}),0)-np.heaviside(t-({t_start})-({t_pulse})-({t_rise}),0))'
         c_str += f' + sin(pi*(t-({t_start}))/2/({t_rise}))*sin(pi*(t-({t_start}))/2/({t_rise})) * (np.heaviside(t-({t_start})-({t_pulse})-({t_rise}),0)-np.heaviside(t-({t_start})-({t_pulse}),0))'
@@ -117,13 +123,14 @@ class PulseSequence:
     Adds the drive_func corresponding to a gaussian pulse to the sequence.
     Returns the total length of the sequence.
     """
-    def gaussian_pulse(self, wd, amp, t_pulse_sigma, pulse_levels:Tuple[str,str], drive_qubit=1, t_start=0):
+    def gaussian_pulse(self, wd, amp, t_pulse_sigma, pulse_levels:Tuple[str,str], drive_qubit=1, phase=0, t_start=0):
         t_start = self.time - t_start
+        self.start_times.append(t_start)
         def envelope(t):
-                t_max = t_start + 3*t_pulse_sigma
+                t_max = t_start + 2*t_pulse_sigma # point of max in gaussian
                 return gaussian(t - t_max, t_pulse_sigma)
         def drive_func(t, args):
-            return amp*envelope(t)*np.sin(wd*t)
+            return amp*envelope(t)*np.sin(wd*t - phase)
         self.envelope_seq.append(envelope)
         self.pulse_seq.append(drive_func)
         self.drive_qubits.apppend(drive_qubit)
