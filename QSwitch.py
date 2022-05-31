@@ -34,6 +34,7 @@ class QSwitch():
         isCavity=[False, False, False, False]) -> None:
 
         self.is2Q = is2Q
+        self.nqubits = 2 + 2*(not is2Q)
 
         if is2Q and cutoffs is None: cutoffs = [5, 5]
         elif cutoffs is None: cutoffs = [4,5,4,4]
@@ -49,42 +50,40 @@ class QSwitch():
             self.alphas = alphas
         else:
             assert EJs is not None and ECs is not None and gs is not None
-            nqubits = 2 + 2*(not is2Q)
-            transmons = [scq.Transmon(EC=ECs[i], EJ=EJs[i], ng=0, ncut=110, truncated_dim=cutoffs[i]) for i in range(nqubits)]
+            transmons = [scq.Transmon(EC=ECs[i], EJ=EJs[i], ng=0, ncut=110, truncated_dim=cutoffs[i]) for i in range(self.nqubits)]
     
-            evals = []*nqubits
-            evecs = []*nqubits
-            for i in range(nqubits):
+            evals = [None]*self.nqubits
+            evecs = [None]*self.nqubits
+            for i in range(self.nqubits):
                 evals[i], evecs[i] = transmons[i].eigensys(evals_count=cutoffs[i])
-            evals[i] -= evals[i][0]
-            self.qubit_freqs = [evals[i][1] for i in range(nqubits)]
-            self.alphas = [(not isCavity[i]) * evals[i][2] - 2*evals[i][1] for i in range(nqubits)]
+                evals[i] -= evals[i][0]
+            self.qubit_freqs = [evals[i][1] for i in range(self.nqubits)]
+            self.alphas = [(not isCavity[i]) * evals[i][2] - 2*evals[i][1] for i in range(self.nqubits)]
 
         a = qt.tensor(qt.destroy(cutoffs[0]), qt.qeye(cutoffs[1])) # source
         b = qt.tensor(qt.qeye(cutoffs[0]), qt.destroy(cutoffs[1])) # switch
-        self.a = a
-        self.b = b
+        self.a_ops = [a, b]
 
         if not is2Q:
             a = qt.tensor(qt.destroy(cutoffs[0]), qt.qeye(cutoffs[1]), qt.qeye(cutoffs[2]), qt.qeye(cutoffs[3])) # source
             b = qt.tensor(qt.qeye(cutoffs[0]), qt.destroy(cutoffs[1]), qt.qeye(cutoffs[2]), qt.qeye(cutoffs[3])) # switch
             c = qt.tensor(qt.qeye(cutoffs[0]), qt.qeye(cutoffs[1]), qt.destroy(cutoffs[2]), qt.qeye(cutoffs[3])) # out1
             d = qt.tensor(qt.qeye(cutoffs[0]), qt.qeye(cutoffs[1]), qt.qeye(cutoffs[2]), qt.destroy(cutoffs[3])) # out2
-            self.a = a
-            self.b = b
-            self.c = c
-            self.d = d
+            self.a_ops = [a, b, c, d]
 
-        H_source = 2*np.pi*(self.qubit_freqs[0]*a.dag()*a + 1/2*self.alphas[0]*a.dag()*a.dag()*a*a)
-        H_switch = 2*np.pi*(self.qubit_freqs[1]*b.dag()*b + 1/2*self.alphas[1]*b.dag()*b.dag()*b*b)
-        H_int_01 = 2*np.pi*self.gs[0] * (a * b.dag() + a.dag() * b)
-        self.H = H_source + H_switch + H_int_01
+        self.H_source = 2*np.pi*(self.qubit_freqs[0]*a.dag()*a + 1/2*self.alphas[0]*a.dag()*a.dag()*a*a)
+        self.H_switch = 2*np.pi*(self.qubit_freqs[1]*b.dag()*b + 1/2*self.alphas[1]*b.dag()*b.dag()*b*b)
+        self.H_int_01 = 2*np.pi*self.gs[0] * (a * b.dag() + a.dag() * b)
+        self.H0 = self.H_source + self.H_switch
+        self.H_int = self.H_int_01
         if not is2Q:
-            H_out1      = 2*np.pi*(self.qubit_freqs[2][1]*c.dag()*c + 1/2*self.alphas[2]*c.dag()*c.dag()*c*c)
-            H_out2      = 2*np.pi*(self.qubit_freqs[3][1]*d.dag()*d + 1/2*self.alphas[3]*d.dag()*d.dag()*d*d)
-            H_int_12 = 2*np.pi*self.gs[1] * (b * c.dag() + b.dag() * c)
-            H_int_13 = 2*np.pi*self.gs[2] * (b * d.dag() + b.dag() * d)
-            self.H += H_out1 + H_out2 + H_int_12 + H_int_13
+            self.H_out1 = 2*np.pi*(self.qubit_freqs[2]*c.dag()*c + 1/2*self.alphas[2]*c.dag()*c.dag()*c*c)
+            self.H_out2 = 2*np.pi*(self.qubit_freqs[3]*d.dag()*d + 1/2*self.alphas[3]*d.dag()*d.dag()*d*d)
+            self.H_int_12 = 2*np.pi*self.gs[1] * (b * c.dag() + b.dag() * c)
+            self.H_int_13 = 2*np.pi*self.gs[2] * (b * d.dag() + b.dag() * d)
+            self.H0 += self.H_out1 + self.H_out2
+            self.H_int += self.H_int_12 + self.H_int_13
+        self.H = self.H0 + self.H_int
         self.esys = self.H.eigenstates()
 
         # Time independent drive op w/o drive amp.
@@ -103,12 +102,11 @@ class QSwitch():
     H_tilde = UHU^+ - iUU^+,
     U = e^(-iw_d t (a^+ a + b^+ b + c^+ c + d^+ d))
     """
-    def H_rot(self, wd):
-        a, b = (self.a, self.b)
-        H_rot = self.H - wd*(a.dag()*a + b.dag()*b)
-        if not self.is2Q: 
-            c, d = (self.c, self.d)
-            H_rot -= wd*(c.dag()*c + d.dag()*d)
+    def H_rot(self, wd, H=None):
+        H_rot = H
+        if H is None: H_rot = self.H
+        for a in self.a_ops:
+            H_rot -= wd*a.dag()*a
         return H_rot
 
     # ======================================= #
@@ -343,7 +341,7 @@ class QSwitch():
                 t_pulse=t_pulse,
                 pulse_levels=(state1, state2),
                 drive_qubit=drive_qubit,
-                t_start=-t_offset,
+                t_offset=t_offset,
                 t_rise=t_rise,
                 )
         return wd
@@ -413,8 +411,9 @@ class QSwitch():
     # Assemble the H_solver with a given pulse sequence to be put into mesolve
     # ======================================= #
 
-    def H_solver(self, seq:PulseSequence):
-        H_solver = [self.H]
+    def H_solver(self, seq:PulseSequence, H=None):
+        if H is None: H = self.H
+        H_solver = [H]
         for pulse_i, pulse_func in enumerate(seq.get_pulse_seq()):
             H_solver.append([self.drive_ops[seq.drive_qubits[pulse_i]], pulse_func])
         return H_solver
@@ -445,11 +444,11 @@ class QSwitch():
     # ======================================= #
     # Time evolution of states
     # ======================================= #
-    def evolve(self, psi0, seq:PulseSequence, times, c_ops=None, nsteps=1000, use_str_solve=True, progress=True):
+    def evolve(self, psi0, seq:PulseSequence, times, H=None, c_ops=None, nsteps=1000, use_str_solve=False, progress=True):
         if not progress: progress = None
         if c_ops is None:
             if not use_str_solve:
-                return qt.mesolve(self.H_solver(seq), psi0, times, progress_bar=progress, options=qt.Options(nsteps=nsteps)).states
+                return qt.mesolve(self.H_solver(seq=seq, H=H), psi0, times, progress_bar=progress, options=qt.Options(nsteps=nsteps)).states
             return qt.mesolve(self.H_solver_str(seq), psi0, times, progress_bar=progress, options=qt.Options(nsteps=nsteps)).states
         else:
             full_result = qt.mcsolve(self.H_solver_str(seq), psi0, times, c_ops, progress_bar=progress, options=qt.Options(nsteps=nsteps))
@@ -464,6 +463,17 @@ class QSwitch():
             pass
             # full_result = qt.mcsolve(self.H_solver_str(seq), psi0, times, c_ops, progress_bar=progress, options=qt.Options(nsteps=nsteps))
             # return np.sum(full_result.states, axis=0)/full_result.ntraj
+    
+    # def evolve_opt_ctrl(self, psi0, I_drives, Q_drives, qubits, times, c_ops=None, nsteps=1000, progress=True):
+    #     assert c_ops == None
+    #     if not progress: progress = None
+    #     seq = PulseSequence()
+    #     for q in qubits:
+    #         seq.const_pulse(wd=2*np.pi*self.qubit_freqs[q], )
+    #     if c_ops is None:
+    #         return qt.mesolve(self.H_solver_opt_ctrl(I_drives, Q_drives), psi0, times, progress_bar=progress, options=qt.Options(nsteps=nsteps)).states
+    #     else:
+    #         pass
 
 
 if __name__ == "__main__":

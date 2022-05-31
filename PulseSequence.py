@@ -1,6 +1,8 @@
+from pyclbr import Function
 import numpy as np
 import qutip as qt
 from typing import List, Set, Dict, Tuple
+import scipy as sp
 
 # Gaussian with amp = 1
 def gaussian(x, sigma):
@@ -86,20 +88,22 @@ class PulseSequence:
     """
     Adds the drive_func corresponding to a constant pulse with a sin^2
     ramp up/down to the sequence.
-    t_start is offset from the end of the last pulse.
+    t_offset is offset from the end of the last pulse.
+    t_start, if not None, defines the absolute pulse start time relative to the beginning of the pulse sequence (overrides t_offset)
     amp: freq
     phase: radians
     Returns the total length of the sequence.
     """
-    def const_pulse(self, wd, amp, t_pulse, pulse_levels:Tuple[str,str], drive_qubit=1, t_start=0, t_rise=1, phase=0):
-        t_start = self.time - t_start
+    def const_pulse(self, wd, amp, t_pulse, pulse_levels:Tuple[str,str], envelope:Function=None, drive_qubit=1, t_offset=0, t_start=None, t_rise=1, phase=0):
+        if t_start is None: t_start = self.time + t_offset
         self.start_times.append(t_start)
-        def envelope(t, args=None):
-                t -= t_start 
-                if 0 <= t < t_rise: return np.sin(np.pi*t/2/t_rise)**2
-                elif t_rise <= t < t_pulse - t_rise: return 1
-                elif t_pulse - t_rise <= t < t_pulse: return np.sin(np.pi*(t_pulse-t)/2/t_rise)**2
-                else: return 0 
+        if envelope is None:
+            def envelope(t, args=None):
+                    t -= t_start 
+                    if 0 <= t < t_rise: return np.sin(np.pi*t/2/t_rise)**2
+                    elif t_rise <= t < t_pulse - t_rise: return 1
+                    elif t_pulse - t_rise <= t < t_pulse: return np.sin(np.pi*(t_pulse-t)/2/t_rise)**2
+                    else: return 0 
         def drive_func(t, args=None):
             return amp*envelope(t)*np.sin(wd*t - phase)
 
@@ -124,7 +128,7 @@ class PulseSequence:
     Returns the total length of the sequence.
     """
     def gaussian_pulse(self, wd, amp, t_pulse_sigma, pulse_levels:Tuple[str,str], drive_qubit=1, phase=0, t_start=0):
-        t_start = self.time - t_start
+        t_start = self.time + t_start
         self.start_times.append(t_start)
         def envelope(t):
                 t_max = t_start + 2*t_pulse_sigma # point of max in gaussian
@@ -137,5 +141,27 @@ class PulseSequence:
         self.pulse_lengths.append(6*t_pulse_sigma)
         self.pulse_freqs.append(wd/2/np.pi)
         self.time = t_start + 6*t_pulse_sigma
+        self.pulse_names.append((min(pulse_levels), max(pulse_levels)))
+        self.amps.append(amp)
+
+    """
+    Pulse with I(t)sin(wd t) + Q(t)cos(wd t)
+    I_values, Q_values should be arrays of I, Q values evaluated at times
+    """
+    def pulse_IQ(self, wd, amp, pulse_levels:Tuple[str,str], I_values, Q_values, times, drive_qubit=1, t_offset=0, t_start=None, phase=Tuple[float,float]):
+        if t_start is None: t_start = self.time + t_offset
+        self.start_times.append(t_start)
+        I_func = sp.interpolate.interp1d(times, I_values, fill_value='extrapolate')
+        Q_func = sp.interpolate.interp1d(times, Q_values, fill_value='extrapolate')
+        def drive_func(t, args=None):
+            return amp*I_func(t)*np.sin(wd*t - phase[0]) + amp*Q_func(t)*np.cos(wd*t - phase[1])
+
+        self.pulse_strs.append(None)
+        self.envelope_seq.append([I_func, Q_func])
+        self.drive_qubits.append(drive_qubit)
+        self.pulse_seq.append(drive_func)
+        self.pulse_lengths.append(times[-1])
+        self.pulse_freqs.append(wd/2/np.pi)
+        self.time = t_start + times[-1]
         self.pulse_names.append((min(pulse_levels), max(pulse_levels)))
         self.amps.append(amp)
