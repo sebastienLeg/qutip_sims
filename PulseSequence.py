@@ -148,13 +148,37 @@ class PulseSequence:
     Pulse with I(t)sin(wd t) + Q(t)cos(wd t)
     I_values, Q_values should be arrays of I, Q values evaluated at times
     """
-    def pulse_IQ(self, wd, amp, pulse_levels:Tuple[str,str], I_values, Q_values, times, drive_qubit=1, t_offset=0, t_start=None, phase=Tuple[float,float]):
+    def pulse_IQ(self, wd, amp, pulse_levels:Tuple[str,str], I_values, Q_values, times, drive_qubit=1, t_offset=0, t_start=None, phase=0):
         if t_start is None: t_start = self.time + t_offset
         self.start_times.append(t_start)
         I_func = sp.interpolate.interp1d(times, I_values, fill_value='extrapolate')
         Q_func = sp.interpolate.interp1d(times, Q_values, fill_value='extrapolate')
         def drive_func(t, args=None):
-            return amp*I_func(t)*np.sin(wd*t - phase[0]) + amp*Q_func(t)*np.cos(wd*t - phase[1])
+            return amp*I_func(t)*np.sin(wd*t - phase) + amp*Q_func(t)*np.cos(wd*t - phase)
+
+        self.pulse_strs.append(None)
+        self.envelope_seq.append([I_func, Q_func])
+        self.drive_qubits.append(drive_qubit)
+        self.pulse_seq.append(drive_func)
+        self.pulse_lengths.append(times[-1])
+        self.pulse_freqs.append(wd/2/np.pi)
+        self.time = t_start + times[-1]
+        self.pulse_names.append((min(pulse_levels), max(pulse_levels)))
+        self.amps.append(amp)
+
+    """
+    Pulse with 1/2(i I(t) + Q(t))a^dag e^(-i wd t) + h.c.
+    Saves just the envelope for the a^dag piece. Need to solve the time
+    evolution with H_solver_unrotate to get both components.
+    I_values, Q_values should be arrays of I, Q values evaluated at times
+    """
+    def pulse_IQ_exp(self, wd, amp, pulse_levels:Tuple[str,str], I_values, Q_values, times, drive_qubit=1, t_offset=0, t_start=None, phase=0):
+        if t_start is None: t_start = self.time + t_offset
+        self.start_times.append(t_start)
+        I_func = sp.interpolate.interp1d(times, I_values, fill_value='extrapolate')
+        Q_func = sp.interpolate.interp1d(times, Q_values, fill_value='extrapolate')
+        def drive_func(t, args=None):
+            return 1/2*amp*(1j*I_func(t) + Q_func(t))*np.exp(-1j*wd*t - phase)
 
         self.pulse_strs.append(None)
         self.envelope_seq.append([I_func, Q_func])

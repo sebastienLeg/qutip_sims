@@ -441,6 +441,14 @@ class QSwitch():
                 ])
         return H_solver
 
+    def H_solver_unrotate(self, seq:PulseSequence, H=None):
+        if H is None: H = self.H
+        H_solver = [H]
+        for pulse_i, pulse_func in enumerate(seq.get_pulse_seq()):
+            H_solver.append([self.a_ops[seq.drive_qubits[pulse_i]].dag(), pulse_func])
+            H_solver.append([self.a_ops[seq.drive_qubits[pulse_i]], lambda t,args=None: np.conj(pulse_func(t,args))])
+        return H_solver
+
     # ======================================= #
     # Time evolution of states
     # ======================================= #
@@ -464,16 +472,20 @@ class QSwitch():
             # full_result = qt.mcsolve(self.H_solver_str(seq), psi0, times, c_ops, progress_bar=progress, options=qt.Options(nsteps=nsteps))
             # return np.sum(full_result.states, axis=0)/full_result.ntraj
     
-    # def evolve_opt_ctrl(self, psi0, I_drives, Q_drives, qubits, times, c_ops=None, nsteps=1000, progress=True):
-    #     assert c_ops == None
-    #     if not progress: progress = None
-    #     seq = PulseSequence()
-    #     for q in qubits:
-    #         seq.const_pulse(wd=2*np.pi*self.qubit_freqs[q], )
-    #     if c_ops is None:
-    #         return qt.mesolve(self.H_solver_opt_ctrl(I_drives, Q_drives), psi0, times, progress_bar=progress, options=qt.Options(nsteps=nsteps)).states
-    #     else:
-    #         pass
+    def evolve_unrotate(self, psi0, seq:PulseSequence, times, H=None, c_ops=None, nsteps=1000, progress=True):
+        if not progress: progress = None
+        if c_ops is None:
+            return qt.mesolve(self.H_solver_unrotate(seq=seq, H=H), psi0, times, progress_bar=progress, options=qt.Options(nsteps=nsteps)).states
+        else:
+            full_result = qt.mcsolve(self.H_solver_unrotate(seq), psi0, times, c_ops, progress_bar=progress, options=qt.Options(nsteps=nsteps))
+            return np.sum(full_result.states, axis=0)/full_result.ntraj
+
+            
+    # ======================================= #
+    # Characterization
+    # ======================================= #
+    def fidelity(self, ket_target, ket_actual):
+        return np.abs(ket_actual.overlap(ket_target))**2
 
 
 if __name__ == "__main__":
