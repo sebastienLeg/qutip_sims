@@ -46,8 +46,8 @@ class QSwitch():
         self.gs = gs
 
         if qubit_freqs is not None and alphas is not None:
-            self.qubit_freqs = qubit_freqs
-            self.alphas = alphas
+            self.qubit_freqs = np.array(qubit_freqs)
+            self.alphas = np.array(alphas)
         else:
             assert EJs is not None and ECs is not None and gs is not None
             transmons = [scq.Transmon(EC=ECs[i], EJ=EJs[i], ng=0, ncut=110, truncated_dim=cutoffs[i]) for i in range(self.nqubits)]
@@ -192,6 +192,21 @@ class QSwitch():
             seen[i] += 1
             assert seen[i] == 1 or sum(i) > n, f'Mapped dressed state to {self.level_nums_to_name(i)} {seen[i]} times!!'
         print("Good enough for dressed states mappings. :)")
+
+    def get_ZZ_matrix(self):
+        ZZ_mat = np.zeros((self.nqubits, self.nqubits))
+        for q_spec in range(self.nqubits):
+            for q_pi in range( self.nqubits):
+                if q_pi == q_spec: continue
+                gstate = 'g'*self.nqubits
+                estate = gstate[:q_spec] + 'e' + gstate[q_spec+1:]
+                qfreq = self.get_base_wd(gstate, estate)/2/np.pi
+                gestate = gstate[:q_pi] + 'e' + gstate[q_pi+1:]
+                eestate = gestate[:q_spec] + 'e' + gestate[q_spec+1:]
+                qfreq_shift = self.get_base_wd(gestate, eestate)/2/np.pi
+                ZZ_mat[q_spec, q_pi] = qfreq_shift - qfreq
+        return ZZ_mat
+
 
     def state(self, levels, esys=None):
         return self.find_dressed(self.make_bare(levels), esys=esys)[2]

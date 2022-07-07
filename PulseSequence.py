@@ -177,8 +177,10 @@ class PulseSequence:
         self.start_times.append(t_start)
         I_func = sp.interpolate.interp1d(times, I_values, fill_value='extrapolate')
         Q_func = sp.interpolate.interp1d(times, Q_values, fill_value='extrapolate')
+        # def drive_func(t, args=None):
+        #     return 1/2*amp*(1j*I_func(t) + Q_func(t))*np.exp(-1j*wd*t - phase)
         def drive_func(t, args=None):
-            return 1/2*amp*(1j*I_func(t) + Q_func(t))*np.exp(-1j*wd*t - phase)
+            return amp*I_func(t)*np.sin(wd*t - phase) + amp*Q_func(t)*np.cos(wd*t - phase)
 
         self.pulse_strs.append(None)
         self.envelope_seq.append([I_func, Q_func])
