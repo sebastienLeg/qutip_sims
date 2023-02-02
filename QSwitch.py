@@ -1,4 +1,5 @@
 import numpy as np
+import scipy as sp
 import scqubits as scq
 import qutip as qt
 
@@ -27,38 +28,48 @@ class QSwitch():
     """
     def __init__(
         self,
-        EJs=None, ECs=None, gs=None,
+        EJs=None, ECs=None, gs=None, # gs=[01, 12, 13, 02, 03, 23]
         qubit_freqs=None, alphas=None, # specify either frequencies + anharmonicities or qubit parameters
+        useZZs=False, ZZs=None, # specify qubit freqs and ZZ shifts to construct H instead
         cutoffs=None,
         is2Q=False, # Model 2 coupled transmons instead of full QRAM module
         isCavity=[False, False, False, False]) -> None:
 
         self.is2Q = is2Q
+        self.useZZs = useZZs
         self.nqubits = 2 + 2*(not is2Q)
 
         if is2Q and cutoffs is None: cutoffs = [5, 5]
         elif cutoffs is None: cutoffs = [4,5,4,4]
         self.cutoffs = cutoffs
 
-        assert gs is not None
-        if np.array(gs).ndim == 0:
-            gs = np.array([gs])
-        self.gs = gs
-
-        if qubit_freqs is not None and alphas is not None:
-            self.qubit_freqs = np.array(qubit_freqs)
-            self.alphas = np.array(alphas)
+        if self.useZZs:
+            assert qubit_freqs is not None and ZZs is not None
+            self.qubit_freqs = np.array(qubit_freqs) # w*adag*a = w*sigmaZ/2
+            self.alphas = np.array([0]*self.nqubits)
+            self.ZZs = np.array(ZZs)
+            assert max(cutoffs) == 2
         else:
-            assert EJs is not None and ECs is not None and gs is not None
-            transmons = [scq.Transmon(EC=ECs[i], EJ=EJs[i], ng=0, ncut=110, truncated_dim=cutoffs[i]) for i in range(self.nqubits)]
+            assert gs is not None
+            if np.array(gs).ndim == 0:
+                gs = np.array([gs])
+            self.gs = gs
+
+            if qubit_freqs is not None and alphas is not None:
+                self.qubit_freqs = np.array(qubit_freqs)
+                self.alphas = np.array(alphas)
+
+            else:
+                assert EJs is not None and ECs is not None and gs is not None
+                transmons = [scq.Transmon(EC=ECs[i], EJ=EJs[i], ng=0, ncut=110, truncated_dim=cutoffs[i]) for i in range(self.nqubits)]
     
-            evals = [None]*self.nqubits
-            evecs = [None]*self.nqubits
-            for i in range(self.nqubits):
-                evals[i], evecs[i] = transmons[i].eigensys(evals_count=cutoffs[i])
-                evals[i] -= evals[i][0]
-            self.qubit_freqs = [evals[i][1] for i in range(self.nqubits)]
-            self.alphas = [(not isCavity[i]) * evals[i][2] - 2*evals[i][1] for i in range(self.nqubits)]
+                evals = [None]*self.nqubits
+                evecs = [None]*self.nqubits
+                for i in range(self.nqubits):
+                    evals[i], evecs[i] = transmons[i].eigensys(evals_count=cutoffs[i])
+                    evals[i] -= evals[i][0]
+                self.qubit_freqs = [evals[i][1] for i in range(self.nqubits)]
+                self.alphas = [(not isCavity[i]) * evals[i][2] - 2*evals[i][1] for i in range(self.nqubits)]
 
         a = qt.tensor(qt.destroy(cutoffs[0]), qt.qeye(cutoffs[1])) # source
         b = qt.tensor(qt.qeye(cutoffs[0]), qt.destroy(cutoffs[1])) # switch
@@ -73,16 +84,34 @@ class QSwitch():
 
         self.H_source = 2*np.pi*(self.qubit_freqs[0]*a.dag()*a + 1/2*self.alphas[0]*a.dag()*a.dag()*a*a)
         self.H_switch = 2*np.pi*(self.qubit_freqs[1]*b.dag()*b + 1/2*self.alphas[1]*b.dag()*b.dag()*b*b)
-        self.H_int_01 = 2*np.pi*self.gs[0] * (a * b.dag() + a.dag() * b)
         self.H0 = self.H_source + self.H_switch
-        self.H_int = self.H_int_01
         if not is2Q:
             self.H_out1 = 2*np.pi*(self.qubit_freqs[2]*c.dag()*c + 1/2*self.alphas[2]*c.dag()*c.dag()*c*c)
             self.H_out2 = 2*np.pi*(self.qubit_freqs[3]*d.dag()*d + 1/2*self.alphas[3]*d.dag()*d.dag()*d*d)
-            self.H_int_12 = 2*np.pi*self.gs[1] * (b * c.dag() + b.dag() * c)
-            self.H_int_13 = 2*np.pi*self.gs[2] * (b * d.dag() + b.dag() * d)
             self.H0 += self.H_out1 + self.H_out2
-            self.H_int += self.H_int_12 + self.H_int_13
+
+        if not self.useZZs:
+            self.H_int_01 = 2*np.pi*self.gs[0] * (a * b.dag() + a.dag() * b)
+            self.H_int = self.H_int_01
+            if not is2Q:
+                self.H_int_12 = 2*np.pi*self.gs[1] * (b * c.dag() + b.dag() * c)
+                self.H_int_13 = 2*np.pi*self.gs[2] * (b * d.dag() + b.dag() * d)
+                self.H_int += self.H_int_12 + self.H_int_13
+                if len(self.gs) == 6: 
+                    self.H_int_02 = 2*np.pi*self.gs[3] * (a * c.dag() + a.dag() * c)
+                    self.H_int_03 = 2*np.pi*self.gs[4] * (a * d.dag() + a.dag() * d)
+                    self.H_int_23 = 2*np.pi*self.gs[5] * (c * d.dag() + c.dag() * d)
+                    self.H_int += self.H_int_02 + self.H_int_03 + self.H_int_23
+        else: # use ZZ shift values: what is the adjustment to qi when qj is in e?
+            ZZs = (self.ZZs + np.transpose(self.ZZs))/2 # average over J_ml and J_lm
+            self.H_int = 0*self.H0
+            for i in range(len(ZZs)):
+                for j in range(i+1, len(ZZs[0])):
+                    id = qt.qeye(cutoffs[0])
+                    tensor = [id]*self.nqubits
+                    tensor[i] = qt.destroy(cutoffs[i]).dag() * qt.destroy(cutoffs[i])
+                    tensor[j] = qt.destroy(cutoffs[j]).dag() * qt.destroy(cutoffs[j])
+                    self.H_int += 2*np.pi*ZZs[i, j]*qt.tensor(*tensor)
         self.H = self.H0 + self.H_int
         self.esys = self.H.eigenstates()
 
@@ -321,32 +350,35 @@ class QSwitch():
     Pi pulse length b/w state1 and state2 (strings representing state)
     amp: freq
     """
-    def get_Tpi(self, state1, state2, amp, drive_qubit=1):
+    def get_Tpi(self, state1, state2, amp, drive_qubit=1, sigma_n=4, type='const'):
         psi0 = self.state(state1)
         psi1 = self.state(state2)
         g_eff = psi0.dag() * amp * self.drive_ops[drive_qubit] * psi1 /2/np.pi
         g_eff = np.abs(g_eff[0][0][0])
         if g_eff == 0: return np.inf
-        return 1/2/g_eff
+        if type=='const': return 1/2/g_eff
+        elif type=='gauss': return 1/2 / (g_eff * np.sqrt(2*np.pi) * sp.special.erf(sigma_n/2 / np.sqrt(2)))
+        return np.inf
 
     """
     Add a pi pulse between state1 and state2 immediately after the previous pulse
     t_pulse_factor multiplies t_pulse to get the final pulse length
     """
-    def add_sequential_pi_pulse(self, seq, state1, state2, amp, drive_qubit=1, wd=0, phase=0, type='const', t_pulse=None, t_rise=1, t_pulse_factor=1):
-        return self.add_precise_pi_pulse(seq, state1, state2, amp, drive_qubit=drive_qubit, wd=wd, phase=phase, type=type, t_pulse=t_pulse, t_rise=t_rise, t_pulse_factor=t_pulse_factor)
+    def add_sequential_pi_pulse(self, seq, state1, state2, amp, pihalf=False, drive_qubit=1, wd=0, phase=0, sigma_n=4, type='const', t_pulse=None, t_rise=1, t_pulse_factor=1):
+        return self.add_precise_pi_pulse(seq, state1, state2, amp, pihalf=pihalf, drive_qubit=drive_qubit, wd=wd, phase=phase, sigma_n=sigma_n, type=type, t_pulse=t_pulse, t_rise=t_rise, t_pulse_factor=t_pulse_factor)
 
     """
     Add a pi pulse between state1 and state2 at time offset from the end of the 
     previous pulse
     """
     def add_precise_pi_pulse(
-        self, seq:PulseSequence, state1:str, state2:str, amp,
+        self, seq:PulseSequence, state1:str, state2:str, amp, pihalf=False,
         drive_qubit=1, wd=0, phase=0, type='const',
-        t_offset=0, t_pulse=None, t_rise=1, t_pulse_factor=1, verbose=True
+        t_offset=0, t_pulse=None, sigma_n=None, t_rise=1, t_pulse_factor=1, verbose=True
         ):
-        if t_pulse == None: t_pulse = self.get_Tpi(state1, state2, amp=amp, drive_qubit=drive_qubit)
+        if t_pulse == None: t_pulse = self.get_Tpi(state1, state2, amp=amp, drive_qubit=drive_qubit, sigma_n=sigma_n, type=type)
         t_pulse *= t_pulse_factor
+        if pihalf: t_pulse /= 2
         if wd == 0: wd = self.get_wd(state1, state2, amp, drive_qubit=drive_qubit, verbose=verbose)
         if type == 'const':
             seq.const_pulse(
@@ -359,6 +391,18 @@ class QSwitch():
                 t_offset=t_offset,
                 t_rise=t_rise,
                 )
+        elif type == 'gauss':
+            seq.gaussian_pulse(
+                wd=wd,
+                amp=amp,
+                phase=phase,
+                t_pulse_sigma=t_pulse,
+                pulse_levels=(state1, state2),
+                drive_qubit=drive_qubit,
+                t_offset=t_offset,
+                sigma_n=sigma_n,
+                )
+        else: assert False, 'Pulse type not implemented'
         return wd
 
     """

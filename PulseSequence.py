@@ -127,20 +127,21 @@ class PulseSequence:
     Adds the drive_func corresponding to a gaussian pulse to the sequence.
     Returns the total length of the sequence.
     """
-    def gaussian_pulse(self, wd, amp, t_pulse_sigma, pulse_levels:Tuple[str,str], drive_qubit=1, phase=0, t_start=0):
-        t_start = self.time + t_start
+    def gaussian_pulse(self, wd, amp, t_pulse_sigma, pulse_levels:Tuple[str,str], sigma_n=4, drive_qubit=1, t_offset=0, t_start=None, phase=0):
+        if t_start is None: t_start = self.time + t_offset
         self.start_times.append(t_start)
-        def envelope(t):
-                t_max = t_start + 2*t_pulse_sigma # point of max in gaussian
+        def envelope(t, args=None):
+                t_max = t_start + sigma_n/2*t_pulse_sigma # point of max in gaussian
+                if t < t_start or t > t_start + sigma_n*t_pulse_sigma: return 0
                 return gaussian(t - t_max, t_pulse_sigma)
         def drive_func(t, args):
             return amp*envelope(t)*np.sin(wd*t - phase)
         self.envelope_seq.append(envelope)
         self.pulse_seq.append(drive_func)
-        self.drive_qubits.apppend(drive_qubit)
-        self.pulse_lengths.append(6*t_pulse_sigma)
+        self.drive_qubits.append(drive_qubit)
+        self.pulse_lengths.append(sigma_n*t_pulse_sigma)
         self.pulse_freqs.append(wd/2/np.pi)
-        self.time = t_start + 6*t_pulse_sigma
+        self.time = t_start + sigma_n*t_pulse_sigma
         self.pulse_names.append((min(pulse_levels), max(pulse_levels)))
         self.amps.append(amp)
 
