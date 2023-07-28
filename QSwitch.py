@@ -30,7 +30,7 @@ class QSwitch():
         self,
         EJs=None, ECs=None, gs=None, # gs=[01, 12, 13, 02, 03, 23]
         qubit_freqs=None, alphas=None, # specify either frequencies + anharmonicities or qubit parameters
-        useZZs=False, ZZs=None, # specify qubit freqs and ZZ shifts to construct H instead
+        useZZs=False, ZZs=None, # specify qubit freqs and ZZ shifts to construct H instead, aka dispersive hamiltonian
         cutoffs=None,
         is2Q=False, # Model 2 coupled transmons instead of full QRAM module
         isCavity=[False, False, False, False]) -> None:
@@ -43,12 +43,12 @@ class QSwitch():
         elif cutoffs is None: cutoffs = [4,5,4,4]
         self.cutoffs = cutoffs
 
+        self.alphas = np.array(alphas)
+
         if self.useZZs:
             assert qubit_freqs is not None and ZZs is not None
             self.qubit_freqs = np.array(qubit_freqs) # w*adag*a = w*sigmaZ/2
-            self.alphas = np.array([0]*self.nqubits)
             self.ZZs = np.array(ZZs)
-            assert max(cutoffs) == 2
         else:
             assert gs is not None
             if np.array(gs).ndim == 0:
@@ -57,7 +57,6 @@ class QSwitch():
 
             if qubit_freqs is not None and alphas is not None:
                 self.qubit_freqs = np.array(qubit_freqs)
-                self.alphas = np.array(alphas)
 
             else:
                 assert EJs is not None and ECs is not None and gs is not None
@@ -107,11 +106,10 @@ class QSwitch():
             self.H_int = 0*self.H0
             for i in range(len(ZZs)):
                 for j in range(i+1, len(ZZs[0])):
-                    id = qt.qeye(cutoffs[0])
-                    tensor = [id]*self.nqubits
+                    tensor = [qt.qeye(cutoffs[q]) for q in range(self.nqubits)]
                     tensor[i] = qt.destroy(cutoffs[i]).dag() * qt.destroy(cutoffs[i])
                     tensor[j] = qt.destroy(cutoffs[j]).dag() * qt.destroy(cutoffs[j])
-                    self.H_int += 2*np.pi*ZZs[i, j]*qt.tensor(*tensor)
+                    self.H_int += 2*np.pi*ZZs[i, j]*qt.tensor(*tensor) # adag_i * a_i * adag_j * a_j
         self.H = self.H0 + self.H_int
         self.esys = self.H.eigenstates()
 
@@ -136,6 +134,14 @@ class QSwitch():
         if H is None: H_rot = self.H
         for a in self.a_ops:
             H_rot -= wd*a.dag()*a
+        return H_rot
+
+    def H_rot_qubits(self, qubit_frame_freqs=None, H=None):
+        H_rot = H
+        if qubit_frame_freqs is None: qubit_frame_freqs = self.qubit_freqs
+        if H is None: H_rot = self.H
+        for q, a in enumerate(self.a_ops):
+            H_rot -= 2*np.pi*qubit_frame_freqs[q]*a.dag()*a
         return H_rot
 
     # ======================================= #
@@ -170,7 +176,7 @@ class QSwitch():
                 best_state = n
         # print(best_state)
         # print('final best overlap', best_overlap)
-        return best_state, best_overlap, evecs[best_state]
+        return best_state, best_overlap, evecs[best_state].unit()
 
     """
     Map dressed states to bare states
@@ -350,22 +356,28 @@ class QSwitch():
     Pi pulse length b/w state1 and state2 (strings representing state)
     amp: freq
     """
-    def get_Tpi(self, state1, state2, amp, drive_qubit=1, sigma_n=4, type='const'):
+    def get_Tpi(self, state1, state2, amp, drive_qubit=1, type='const', **kwargs):
         psi0 = self.state(state1)
         psi1 = self.state(state2)
         g_eff = psi0.dag() * amp * self.drive_ops[drive_qubit] * psi1 /2/np.pi
         g_eff = np.abs(g_eff[0][0][0])
         if g_eff == 0: return np.inf
         if type=='const': return 1/2/g_eff
-        elif type=='gauss': return 1/2 / (g_eff * np.sqrt(2*np.pi) * sp.special.erf(sigma_n/2 / np.sqrt(2)))
+        elif type=='gauss':
+            if 'sigma_n' not in kwargs or kwargs['sigma_n'] is None: sigma_n = 4
+            else: sigma_n = kwargs['sigma_n']
+            return 1/2 / (g_eff * np.sqrt(2*np.pi) * sp.special.erf(sigma_n/2 / np.sqrt(2)))
+        elif type == 'adiabatic':
+            beta = kwargs['beta']
+            return 1/2 / (g_eff * np.arctan(np.sinh(beta)) / beta)
         return np.inf
 
     """
     Add a pi pulse between state1 and state2 immediately after the previous pulse
     t_pulse_factor multiplies t_pulse to get the final pulse length
     """
-    def add_sequential_pi_pulse(self, seq, state1, state2, amp, pihalf=False, drive_qubit=1, wd=0, phase=0, sigma_n=4, type='const', t_pulse=None, t_rise=1, t_pulse_factor=1):
-        return self.add_precise_pi_pulse(seq, state1, state2, amp, pihalf=pihalf, drive_qubit=drive_qubit, wd=wd, phase=phase, sigma_n=sigma_n, type=type, t_pulse=t_pulse, t_rise=t_rise, t_pulse_factor=t_pulse_factor)
+    def add_sequential_pi_pulse(self, seq, state1, state2, amp, pihalf=False, drive_qubit=1, wd=0, phase=0, type='const', t_offset=0, t_pulse=None, t_rise=1, t_pulse_factor=1, **kwargs):
+        return self.add_precise_pi_pulse(seq, state1, state2, amp, pihalf=pihalf, drive_qubit=drive_qubit, wd=wd, phase=phase, type=type, t_offset=t_offset, t_pulse=t_pulse, t_rise=t_rise, t_pulse_factor=t_pulse_factor, **kwargs)
 
     """
     Add a pi pulse between state1 and state2 at time offset from the end of the 
@@ -374,11 +386,12 @@ class QSwitch():
     def add_precise_pi_pulse(
         self, seq:PulseSequence, state1:str, state2:str, amp, pihalf=False,
         drive_qubit=1, wd=0, phase=0, type='const',
-        t_offset=0, t_pulse=None, sigma_n=None, t_rise=1, t_pulse_factor=1, verbose=True
+        t_offset=0, t_pulse=None, t_rise=1, t_pulse_factor=1, verbose=True, **kwargs
         ):
-        if t_pulse == None: t_pulse = self.get_Tpi(state1, state2, amp=amp, drive_qubit=drive_qubit, sigma_n=sigma_n, type=type)
+        if t_pulse == None:
+            t_pulse = self.get_Tpi(state1, state2, amp=amp, drive_qubit=drive_qubit, type=type, **kwargs)
+            if pihalf: t_pulse /= 2
         t_pulse *= t_pulse_factor
-        if pihalf: t_pulse /= 2
         if wd == 0: wd = self.get_wd(state1, state2, amp, drive_qubit=drive_qubit, verbose=verbose)
         if type == 'const':
             seq.const_pulse(
@@ -392,6 +405,7 @@ class QSwitch():
                 t_rise=t_rise,
                 )
         elif type == 'gauss':
+            if 'sigma_n' not in kwargs: kwargs['sigma_n'] = 4
             seq.gaussian_pulse(
                 wd=wd,
                 amp=amp,
@@ -400,8 +414,19 @@ class QSwitch():
                 pulse_levels=(state1, state2),
                 drive_qubit=drive_qubit,
                 t_offset=t_offset,
-                sigma_n=sigma_n,
+                sigma_n=kwargs['sigma_n'],
                 )
+        elif type == 'adiabatic':
+            seq.adiabatic_pulse(
+                wd=wd,
+                amp=amp,
+                mu=kwargs['mu'],
+                beta=kwargs['beta'],
+                period=t_pulse,
+                pulse_levels=(state1, state2),
+                drive_qubit=drive_qubit,
+                t_offset=t_offset,
+            )
         else: assert False, 'Pulse type not implemented'
         return wd
 
@@ -477,11 +502,14 @@ class QSwitch():
             H_solver.append([self.drive_ops[seq.drive_qubits[pulse_i]], pulse_func])
         return H_solver
 
-    # def H_solver_array(self, seq:PulseSequence, times):
-    #     # WARNING: need to sample at short enough times for drive frequency
-    #     return [self.H, 
-    #     [self.drive_op, np.array([seq.pulse(t, None) for t in times])]
-    #     ]
+    def H_solver_array(self, seq:PulseSequence, times, H=None):
+        # WARNING: need to sample at short enough times for drive frequency
+        if H is None: H = self.H
+        H_solver = [H]
+        for pulse_i, pulse_func in enumerate(seq.get_pulse_seq()):
+            waveform = np.array([pulse_func(t, None) for t in times])
+            H_solver.append([self.drive_ops[seq.drive_qubits[pulse_i]], waveform])
+        return H_solver
 
     def H_solver_str(self, seq:PulseSequence):
         H_solver = [self.H]
@@ -490,23 +518,77 @@ class QSwitch():
             H_solver.append([self.drive_ops[drive_qubit], pulse_str])
         return H_solver
 
+    # In rotating frame of qubits
     def H_solver_rot(self, seq:PulseSequence):
-        H_solver = []
+        assert self.useZZs, "this only works with dispersive hamiltonian currently"
+
+        # H_solver = [self.H_rot_qubits()]
+        H_solver = [None]
+        qubit_frame_freqs = [0]*self.nqubits
         for pulse_i, envelope_func in enumerate(seq.get_envelope_seq()):
-            H_solver.append([
-                self.H_rot(2*np.pi*seq.get_pulse_freqs()[pulse_i])\
-                    + seq.get_pulse_amps()[pulse_i]/2*self.drive_ops[seq.get_drive_qubits()[pulse_i]],
-                envelope_func
-                ])
+            q = seq.get_drive_qubits()[pulse_i]
+            fd = seq.get_pulse_freqs()[pulse_i]
+            if not qubit_frame_freqs[q]: qubit_frame_freqs[q] = fd
+            else: assert fd == qubit_frame_freqs[q], f'Must have just a single rotating frame! {fd} does not match first freq {qubit_frame_freqs[q]}'
+            if hasattr(envelope_func, "__len__"):
+                envelope_func_I = envelope_func[0]
+                envelope_func_Q = envelope_func[1]
+                a_op_rot_I = self.a_ops[seq.drive_qubits[pulse_i]] * np.exp(-1j*seq.get_pulse_phases()[pulse_i])
+                a_op_rot_Q = self.a_ops[seq.drive_qubits[pulse_i]] * np.exp(-1j*seq.get_pulse_phases()[pulse_i]-1j*np.pi/2)
+                H_solver.append([seq.get_pulse_amps()[pulse_i]/2*(a_op_rot_I.dag() + a_op_rot_I)*2*np.pi, envelope_func_I])
+                H_solver.append([seq.get_pulse_amps()[pulse_i]/2*(a_op_rot_Q.dag() + a_op_rot_Q)*2*np.pi, envelope_func_Q])
+            else:
+                a_op_rot = self.a_ops[seq.get_drive_qubits()[pulse_i]] * np.exp(1j*seq.get_pulse_phases()[pulse_i])
+                H_solver.append([
+                    seq.get_pulse_amps()[pulse_i]/2*(a_op_rot + a_op_rot.dag())*2*np.pi,
+                    envelope_func
+                    ])
+        # qubit_frame_freqs = self.qubit_freqs
+        H_solver[0] = self.H_rot_qubits(qubit_frame_freqs=qubit_frame_freqs)
         return H_solver
 
-    def H_solver_unrotate(self, seq:PulseSequence, H=None):
-        if H is None: H = self.H
-        H_solver = [H]
-        for pulse_i, pulse_func in enumerate(seq.get_pulse_seq()):
-            H_solver.append([self.a_ops[seq.drive_qubits[pulse_i]].dag(), pulse_func])
-            H_solver.append([self.a_ops[seq.drive_qubits[pulse_i]], lambda t,args=None: np.conj(pulse_func(t,args))])
+    # In rotating frame of drive (angular)
+    def H_solver_rot_wd(self, seq:PulseSequence, wframe):
+        # H_solver = [self.H_rot_qubits()]
+        H_solver = [None]
+        for pulse_i, envelope_func in enumerate(seq.get_envelope_seq()):
+            q = seq.get_drive_qubits()[pulse_i]
+            fd = seq.get_pulse_freqs()[pulse_i]
+            assert 2*np.pi*fd == wframe, f'Your hamiltonian will not be correct with this function if your rotating frame is not the same as your drive frequency! {fd} does not match frame freq {wframe/2/np.pi}'
+            if hasattr(envelope_func, "__len__"):
+                envelope_func_I = envelope_func[0]
+                envelope_func_Q = envelope_func[1]
+                a_op_rot_I = self.a_ops[seq.drive_qubits[pulse_i]] * np.exp(-1j*seq.get_pulse_phases()[pulse_i])
+                a_op_rot_Q = self.a_ops[seq.drive_qubits[pulse_i]] * np.exp(-1j*seq.get_pulse_phases()[pulse_i]-1j*np.pi/2)
+                H_solver.append([seq.get_pulse_amps()[pulse_i]/2*(a_op_rot_I.dag() + a_op_rot_I)*2*np.pi, envelope_func_I])
+                H_solver.append([seq.get_pulse_amps()[pulse_i]/2*(a_op_rot_Q.dag() + a_op_rot_Q)*2*np.pi, envelope_func_Q])
+            else:
+                a_op_rot = self.a_ops[seq.get_drive_qubits()[pulse_i]] * np.exp(1j*seq.get_pulse_phases()[pulse_i])
+                H_solver.append([
+                    seq.get_pulse_amps()[pulse_i]/2*(a_op_rot + a_op_rot.dag())*2*np.pi,
+                    envelope_func
+                    ])
+        H_solver[0] = self.H_rot(wd=wframe)
         return H_solver
+
+    # def H_solver_rot(self, seq:PulseSequence):
+    #     H_solver = [self.H_rot(2*np.pi*seq.get_pulse_freqs()[pulse_i])]
+    #     for pulse_i, envelope_func in enumerate(seq.get_envelope_seq()):
+    #         H_solver.append([
+    #             seq.get_pulse_amps()[pulse_i]/2*(
+    #                 self.a_ops[seq.get_drive_qubits()[pulse_i]]*np.exp(1j*seq.get_pulse_phases()[pulse_i]) +
+    #                 self.a_ops[seq.get_drive_qubits()[pulse_i]].dag()*np.exp(-1j*seq.get_pulse_phases()[pulse_i])),
+    #             envelope_func
+    #             ])
+    #     return H_solver
+
+    # def H_solver_unrotate(self, seq:PulseSequence, H=None):
+    #     if H is None: H = self.H
+    #     H_solver = [H]
+    #     for pulse_i, pulse_func in enumerate(seq.get_pulse_seq()):
+    #         H_solver.append([self.a_ops[seq.drive_qubits[pulse_i]].dag(), pulse_func])
+    #         H_solver.append([self.a_ops[seq.drive_qubits[pulse_i]], lambda t,args=None: np.conj(pulse_func(t,args))])
+    #     return H_solver
 
     # ======================================= #
     # Time evolution of states
@@ -521,6 +603,14 @@ class QSwitch():
             full_result = qt.mcsolve(self.H_solver_str(seq), psi0, times, c_ops, progress_bar=progress, options=qt.Options(nsteps=nsteps))
             return np.sum(full_result.states, axis=0)/full_result.ntraj
 
+    def evolve_array(self, psi0, seq:PulseSequence, times, H=None, c_ops=None, nsteps=1000, use_str_solve=False, progress=True):
+        if not progress: progress = None
+        if c_ops is None:
+            return qt.mesolve(self.H_solver_array(seq=seq, times=times, H=H), psi0, times, progress_bar=progress, options=qt.Options(nsteps=nsteps)).states
+        else:
+            full_result = qt.mcsolve(self.H_solver_array(seq, times=times, H=H), psi0, times, c_ops, progress_bar=progress, options=qt.Options(nsteps=nsteps))
+            return np.sum(full_result.states, axis=0)/full_result.ntraj
+
     def evolve_rot_frame(self, psi0, seq:PulseSequence, times, c_ops=None, nsteps=1000, progress=True):
         assert c_ops == None
         if not progress: progress = None
@@ -531,15 +621,29 @@ class QSwitch():
             # full_result = qt.mcsolve(self.H_solver_str(seq), psi0, times, c_ops, progress_bar=progress, options=qt.Options(nsteps=nsteps))
             # return np.sum(full_result.states, axis=0)/full_result.ntraj
     
-    def evolve_unrotate(self, psi0, seq:PulseSequence, times, H=None, c_ops=None, nsteps=1000, progress=True):
-        if not progress: progress = None
-        if c_ops is None:
-            return qt.mesolve(self.H_solver_unrotate(seq=seq, H=H), psi0, times, progress_bar=progress, options=qt.Options(nsteps=nsteps)).states
-        else:
-            full_result = qt.mcsolve(self.H_solver_unrotate(seq), psi0, times, c_ops, progress_bar=progress, options=qt.Options(nsteps=nsteps))
-            return np.sum(full_result.states, axis=0)/full_result.ntraj
+    def evolve_unrotate(self, times, result=None, psi0=None, seq:PulseSequence=None, H=None, c_ops=None, nsteps=1000, progress=True):
+        # if not progress: progress = None
+        # if c_ops is None:
+        #     return qt.mesolve(self.H_solver_unrotate(seq=seq, H=H), psi0, times, progress_bar=progress, options=qt.Options(nsteps=nsteps)).states
+        # else:
+        #     full_result = qt.mcsolve(self.H_solver_unrotate(seq), psi0, times, c_ops, progress_bar=progress, options=qt.Options(nsteps=nsteps))
+        #     return np.sum(full_result.states, axis=0)/full_result.ntraj
+        if result is None:
+            result = self.evolve(psi0=psi0, times=times, seq=seq, H=H, c_ops=c_ops, nsteps=nsteps, progress=progress)
+        if H is None:
+            H = self.H
+            esys = self.esys
+        else: esys = H.eigenstates()
+        assert len(result) == len(times)
+        result_rot = [0*result[i_t] for i_t in range(len(times))]
+        for i_t, t in enumerate(tqdm(times, disable=not progress)):
+            evals, evecs = esys
+            for eval, evec in zip(evals, evecs):
+                # |a> = sum_i(|biXbi|a>), a.overlap(b) = <a|b>
+                result_rot[i_t] += np.exp(1j*eval*t) * evec.overlap(result[i_t]) * evec
+        return result_rot
 
-            
+
     # ======================================= #
     # Characterization
     # ======================================= #

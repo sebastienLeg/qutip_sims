@@ -8,6 +8,27 @@ import scipy as sp
 def gaussian(x, sigma):
     return np.exp(-x**2/2/sigma**2)
 
+# ====================================================== #
+# Adiabatic pi pulse functions
+# beta ~ slope of the frequency sweep (also adjusts width)
+# mu ~ width of frequency sweep (also adjusts slope)
+# period: delta frequency sweeps through zero at period/2
+# amp_max
+
+def adiabatic_amp(t, amp_max, beta, period):
+    return amp_max / np.cosh(beta*(2*t/period - 1))
+
+def adiabatic_phase(t, mu, beta, period):
+    return mu * np.log(adiabatic_amp(t, amp_max=1, beta=beta, period=period))
+
+def adiabatic_iqamp(t, amp_max, mu, beta, period):
+    amp = np.abs(adiabatic_amp(t, amp_max=amp_max, beta=beta, period=period))
+    phase = adiabatic_phase(t, mu=mu, beta=beta, period=period)
+    iamp = amp * (np.cos(phase) + 1j*np.sin(phase))
+    qamp = amp * (-np.sin(phase) + 1j*np.cos(phase))
+    return np.real(iamp), np.real(qamp)
+
+# ====================================================== #
 
 class PulseSequence:
     def __init__(self, start_time=0):
@@ -16,6 +37,7 @@ class PulseSequence:
         self.drive_qubits = []
         self.pulse_lengths = []
         self.pulse_freqs = [] # pulse frequencies (real freq, not omega)
+        self.pulse_phases = [] # pulse phases (radians)
         self.pulse_strs = [] # cython strs for pulses
         self.time = start_time
         self.start_times = []
@@ -55,6 +77,9 @@ class PulseSequence:
                 if pulse in pulse_to_freqs: continue
                 pulse_to_freqs.update({pulse:self.pulse_freqs[i]})
             return pulse_to_freqs
+
+    def get_pulse_phases(self):
+        return self.pulse_phases
 
     def get_pulse_amps(self, simplified=False):
         if not simplified: return self.amps
@@ -105,9 +130,9 @@ class PulseSequence:
                     elif t_pulse - t_rise <= t < t_pulse: return np.sin(np.pi*(t_pulse-t)/2/t_rise)**2
                     else: return 0 
         def drive_func(t, args=None):
-            return amp*envelope(t)*np.sin(wd*t - phase)
+            return amp*envelope(t)*np.cos(wd*t + phase)
 
-        c_str = f'({amp}) * sin(({wd})*t-{phase}) * ('
+        c_str = f'({amp}) * cos(({wd})*t+{phase}) * ('
         c_str += f'sin(pi*(t-({t_start}))/2/({t_rise}))*sin(pi*(t-({t_start}))/2/({t_rise})) * (np.heaviside(t-({t_start}),0)-np.heaviside(t-({t_start})-({t_rise}),0))'
         c_str += f' + (np.heaviside(t-({t_start})-({t_rise}),0)-np.heaviside(t-({t_start})-({t_pulse})-({t_rise}),0))'
         c_str += f' + sin(pi*(t-({t_start}))/2/({t_rise}))*sin(pi*(t-({t_start}))/2/({t_rise})) * (np.heaviside(t-({t_start})-({t_pulse})-({t_rise}),0)-np.heaviside(t-({t_start})-({t_pulse}),0))'
@@ -119,6 +144,7 @@ class PulseSequence:
         self.pulse_seq.append(drive_func)
         self.pulse_lengths.append(t_pulse)
         self.pulse_freqs.append(wd/2/np.pi)
+        self.pulse_phases.append(phase)
         self.time = t_start + t_pulse
         self.pulse_names.append((min(pulse_levels), max(pulse_levels)))
         self.amps.append(amp)
@@ -131,17 +157,38 @@ class PulseSequence:
         if t_start is None: t_start = self.time + t_offset
         self.start_times.append(t_start)
         def envelope(t, args=None):
-                t_max = t_start + sigma_n/2*t_pulse_sigma # point of max in gaussian
-                if t < t_start or t > t_start + sigma_n*t_pulse_sigma: return 0
-                return gaussian(t - t_max, t_pulse_sigma)
+            t_max = t_start + sigma_n/2*t_pulse_sigma # point of max in gaussian
+            if t < t_start or t > t_start + sigma_n*t_pulse_sigma: return 0
+            return gaussian(t - t_max, t_pulse_sigma)
         def drive_func(t, args):
-            return amp*envelope(t)*np.sin(wd*t - phase)
+            return amp*envelope(t)*np.cos(wd*t + phase)
+            # return amp*envelope(t)*np.sin(wd*t - phase)
         self.envelope_seq.append(envelope)
         self.pulse_seq.append(drive_func)
         self.drive_qubits.append(drive_qubit)
         self.pulse_lengths.append(sigma_n*t_pulse_sigma)
         self.pulse_freqs.append(wd/2/np.pi)
+        self.pulse_phases.append(phase)
         self.time = t_start + sigma_n*t_pulse_sigma
+        self.pulse_names.append((min(pulse_levels), max(pulse_levels)))
+        self.amps.append(amp)
+
+    def adiabatic_pulse(self, wd, amp, mu, beta, period, pulse_levels:Tuple[str,str], drive_qubit=1, t_offset=0, t_start=None, phase=0):
+        if t_start is None: t_start = self.time + t_offset
+        self.start_times.append(t_start)
+        def envelope(t, args=None):
+            if t < t_start or t > t_start + period: return 0
+            return adiabatic_amp(t-t_start, amp_max=1, beta=beta, period=period)
+        def drive_func(t, args):
+            phase_t = adiabatic_phase(t-t_start, mu=mu, beta=beta, period=period)
+            return amp*envelope(t)*(np.cos(phase_t)*np.cos(wd*t + phase) - np.sin(phase_t)*np.sin(wd*t + phase))
+        self.envelope_seq.append(envelope)
+        self.pulse_seq.append(drive_func)
+        self.drive_qubits.append(drive_qubit)
+        self.pulse_lengths.append(period)
+        self.pulse_freqs.append(wd/2/np.pi)
+        self.pulse_phases.append(phase)
+        self.time = t_start + period
         self.pulse_names.append((min(pulse_levels), max(pulse_levels)))
         self.amps.append(amp)
 
@@ -155,14 +202,15 @@ class PulseSequence:
         I_func = sp.interpolate.interp1d(times, I_values, fill_value='extrapolate')
         Q_func = sp.interpolate.interp1d(times, Q_values, fill_value='extrapolate')
         def drive_func(t, args=None):
-            return amp*I_func(t)*np.sin(wd*t - phase) + amp*Q_func(t)*np.cos(wd*t - phase)
+            return amp*I_func(t)*np.cos(wd*t + phase) + amp*Q_func(t)*np.sin(wd*t + phase)
 
         self.pulse_strs.append(None)
-        self.envelope_seq.append([I_func, Q_func])
+        self.envelope_seq.append([lambda t, args=None: I_func(t), lambda t, args=None: Q_func(t)])
         self.drive_qubits.append(drive_qubit)
         self.pulse_seq.append(drive_func)
         self.pulse_lengths.append(times[-1])
         self.pulse_freqs.append(wd/2/np.pi)
+        self.pulse_phases.append(phase)
         self.time = t_start + times[-1]
         self.pulse_names.append((min(pulse_levels), max(pulse_levels)))
         self.amps.append(amp)
@@ -176,19 +224,20 @@ class PulseSequence:
     def pulse_IQ_exp(self, wd, amp, pulse_levels:Tuple[str,str], I_values, Q_values, times, drive_qubit=1, t_offset=0, t_start=None, phase=0):
         if t_start is None: t_start = self.time + t_offset
         self.start_times.append(t_start)
-        I_func = sp.interpolate.interp1d(times, I_values, fill_value='extrapolate')
-        Q_func = sp.interpolate.interp1d(times, Q_values, fill_value='extrapolate')
+        I_func = sp.interpolate.interp1d(times, I_values, fill_value='extrapolate', kind='linear')
+        Q_func = sp.interpolate.interp1d(times, Q_values, fill_value='extrapolate', kind='linear')
         # def drive_func(t, args=None):
         #     return 1/2*amp*(1j*I_func(t) + Q_func(t))*np.exp(-1j*wd*t - phase)
         def drive_func(t, args=None):
             return amp*I_func(t)*np.sin(wd*t - phase) + amp*Q_func(t)*np.cos(wd*t - phase)
 
         self.pulse_strs.append(None)
-        self.envelope_seq.append([I_func, Q_func])
+        self.envelope_seq.append([lambda t, args=None: I_func(t), lambda t, args=None: Q_func(t)])
         self.drive_qubits.append(drive_qubit)
         self.pulse_seq.append(drive_func)
         self.pulse_lengths.append(times[-1])
         self.pulse_freqs.append(wd/2/np.pi)
+        self.pulse_phases.append(phase)
         self.time = t_start + times[-1]
         self.pulse_names.append((min(pulse_levels), max(pulse_levels)))
         self.amps.append(amp)
