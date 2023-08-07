@@ -199,8 +199,8 @@ class PulseSequence:
     def pulse_IQ(self, wd, amp, pulse_levels:Tuple[str,str], I_values, Q_values, times, drive_qubit=1, t_offset=0, t_start=None, phase=0):
         if t_start is None: t_start = self.time + t_offset
         self.start_times.append(t_start)
-        I_func = sp.interpolate.interp1d(times, I_values, fill_value='extrapolate')
-        Q_func = sp.interpolate.interp1d(times, Q_values, fill_value='extrapolate')
+        I_func = sp.interpolate.interp1d(times, I_values, fill_value='extrapolate', kind='quadratic')
+        Q_func = sp.interpolate.interp1d(times, Q_values, fill_value='extrapolate', kind='quadratic')
         def drive_func(t, args=None):
             return amp*I_func(t)*np.cos(wd*t + phase) + amp*Q_func(t)*np.sin(wd*t + phase)
 
@@ -224,8 +224,8 @@ class PulseSequence:
     def pulse_IQ_exp(self, wd, amp, pulse_levels:Tuple[str,str], I_values, Q_values, times, drive_qubit=1, t_offset=0, t_start=None, phase=0):
         if t_start is None: t_start = self.time + t_offset
         self.start_times.append(t_start)
-        I_func = sp.interpolate.interp1d(times, I_values, fill_value='extrapolate', kind='linear')
-        Q_func = sp.interpolate.interp1d(times, Q_values, fill_value='extrapolate', kind='linear')
+        I_func = sp.interpolate.interp1d(times, I_values, fill_value='extrapolate', kind='quadratic')
+        Q_func = sp.interpolate.interp1d(times, Q_values, fill_value='extrapolate', kind='quadratic')
         # def drive_func(t, args=None):
         #     return 1/2*amp*(1j*I_func(t) + Q_func(t))*np.exp(-1j*wd*t - phase)
         def drive_func(t, args=None):
