@@ -554,7 +554,7 @@ class QSwitch():
         for pulse_i, envelope_func in enumerate(seq.get_envelope_seq()):
             q = seq.get_drive_qubits()[pulse_i]
             fd = seq.get_pulse_freqs()[pulse_i]
-            assert 2*np.pi*fd == wframe, f'Your hamiltonian will not be correct with this function if your rotating frame is not the same as your drive frequency! {fd} does not match frame freq {wframe/2/np.pi}'
+            assert np.isclose(2*np.pi*fd, wframe), f'Your hamiltonian will not be correct with this function if your rotating frame is not the same as your drive frequency! {fd} does not match frame freq {wframe/2/np.pi}'
             if hasattr(envelope_func, "__len__"):
                 envelope_func_I = envelope_func[0]
                 envelope_func_Q = envelope_func[1]
@@ -569,6 +569,10 @@ class QSwitch():
                     envelope_func
                     ])
         H_solver[0] = self.H_rot(wd=wframe)
+        import h5py
+        h = H_solver[0].full()
+        with h5py.File("H_rot_wd0.hdf5", "w") as f:
+            dset = f.create_dataset("H_rot_wd0", shape=h.shape, dtype=h.dtype, data=h)
         return H_solver
 
     # def H_solver_rot(self, seq:PulseSequence):
