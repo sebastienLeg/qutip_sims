@@ -176,7 +176,11 @@ class QSwitch():
                 best_state = n
         # print(best_state)
         # print('final best overlap', best_overlap)
-        return best_state, best_overlap, evecs[best_state].unit()
+
+        # Scale by product with bare evec to remove phase
+        best_evec = evecs[best_state] / ket_bare.overlap(evecs[best_state])
+        best_evec = best_evec.unit()
+        return best_state, best_overlap, best_evec
 
     """
     Map dressed states to bare states
