@@ -700,6 +700,12 @@ class QSwitch():
 # ======================================================================================= #
 
 class QSwitchTunableTransmonCoupler(QSwitch):
+    def EJ_flux(self, EJmax=None, phi_ext=None, dEJ=None): # phi_ext in units of phi0
+        if EJmax is None: EJmax = self.EJs[-1]
+        if phi_ext is None: phi_ext = self.phi_ext
+        if dEJ is None: dEJ = self.dEJ
+        return EJmax * np.sqrt(np.cos(np.pi*phi_ext)**2 + dEJ**2 * np.sin(np.pi*phi_ext)**2)
+
     """
     Assume coupler is between Q0 and Q1, indexed as last element for all parameter arrays
     """
