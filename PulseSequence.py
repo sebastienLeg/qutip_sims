@@ -8,6 +8,9 @@ import scipy as sp
 def gaussian(x, sigma):
     return np.exp(-x**2/2/sigma**2)
 
+def logistic(x, sigma):
+    return 1 / (1 + np.exp(-x/sigma))
+
 # ====================================================== #
 # Adiabatic pi pulse functions
 # beta ~ slope of the frequency sweep (also adjusts width)
@@ -304,7 +307,7 @@ class PulseSequence:
         self.time = t_begin_transit + t_flux_rise
     
 
-    def construct_flux_transition_map(self, sigma_n=4):
+    def construct_flux_transition_map(self, sigma_n=6):
         flux_transitions = self.get_flux_transitions()
         assert len(flux_transitions) >= 1 # need at least the "transition" to the starting flux
         flux_seq = flux_transitions[:, 2] # get the flux values we are transitioning to
@@ -325,13 +328,13 @@ class PulseSequence:
                 # need to define tstart and tend as arguments here or else they will be evaluated only at runtime
                 def envelope(t, args=None):
                     if t_to_i <= t < t_to_f:
-                        t_ramp_sigma = (t_to_f - t_to_i)/sigma_n
-                        return gaussian(t-t_to_f, t_ramp_sigma)
+                        t_ramp_sigma = (t_to_f - t_to_i)/sigma_n/2
+                        return logistic(t-sigma_n*t_ramp_sigma-t_to_i, t_ramp_sigma)
                     elif t_to_f <= t < t_from_i:
                         return 1
                     elif t_from_i <= t < t_from_f:
-                        t_ramp_sigma = (t_from_f - t_from_i)/sigma_n
-                        return 1 - gaussian(t-t_from_f, t_ramp_sigma)
+                        t_ramp_sigma = (t_from_f - t_from_i)/sigma_n/2
+                        return 1 - logistic(t-sigma_n*t_ramp_sigma-t_from_i, t_ramp_sigma)
                     else: return 0
                 return envelope
             windows.append(H0_flux_window())

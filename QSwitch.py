@@ -24,6 +24,19 @@ class QSwitch():
     lvl_name_to_num = dict(g=0, e=1, f=2, h=3, j=4)
     lvl_num_to_name = ['g', 'e', 'f', 'h', 'j']
 
+    def transmon_f0n(self, n, EC, EJ):
+        return np.sqrt(8*EC*EJ)*n - EC/12 * (6*n**2 + 6*n + 3) + EC/4
+    
+    def transmon_fge(self, EC, EJ):
+        return self.transmon_f0n(1, EC, EJ) - self.transmon_f0n(0, EC, EJ)
+    
+    def transmon_fef(self, EC, EJ):
+        return self.transmon_f0n(2, EC, EJ) - self.transmon_f0n(1, EC, EJ)
+    
+    def transmon_alpha(self, EC, EJ):
+        return self.transmon_fef(EC, EJ) - self.transmon_fge(EC, EJ)
+    
+
     """
     All units are by default in GHz/ns
     """
@@ -61,6 +74,10 @@ class QSwitch():
 
             else:
                 assert EJs is not None and ECs is not None and gs is not None
+    
+                # self.qubit_freqs = [self.transmon_fge(ECs[i], EJs[i]) for i in range(self.nqubits)]
+                # self.alphas = [(not isCavity[i])*(self.transmon_alpha(ECs[i], EJs[i])) for i in range(self.nqubits)]
+                
                 transmons = [scq.Transmon(EC=ECs[i], EJ=EJs[i], ng=0, ncut=110, truncated_dim=cutoffs[i]) for i in range(self.nqubits)]
     
                 evals = [None]*self.nqubits
@@ -237,11 +254,15 @@ class QSwitch():
     def get_ZZ(self, qA, qB, qA_state='e', qB_state='e'): # how much does qA_state shift when qB is in qB_state?
         gstate = 'g'*self.nqubits
         estate = gstate[:qA] + qA_state + gstate[qA+1:]
-        qfreq = self.get_base_wd(gstate, estate)/2/np.pi
+        qfreq = self.get_base_wd(gstate, estate, keep_sign=True)/2/np.pi
 
         gestate = gstate[:qB] + qB_state + gstate[qB+1:]
         eestate = gestate[:qA] + qA_state + gestate[qA+1:]
-        qfreq_shift = self.get_base_wd(gestate, eestate)/2/np.pi
+        qfreq_shift = self.get_base_wd(gestate, eestate, keep_sign=True)/2/np.pi
+
+        # print(estate, self.get_base_wd(gstate, estate)/2/np.pi)
+        # print(gestate, self.get_base_wd(gstate, gestate)/2/np.pi)
+        # print(eestate, self.get_base_wd(gstate, eestate)/2/np.pi)
         return qfreq_shift - qfreq
 
 
@@ -711,7 +732,8 @@ class QSwitchTunableTransmonCoupler(QSwitch):
     """
     def __init__(
         self,
-        EJs=None, ECs=None, dEJ=0, gs=None, # dEJ=(EJ1-EJ2)/(EJ1+EJ2); gs=[01, 12, 13, 02, 03, 23, 0c, 1c, 2c, 3c]
+        EJs=None, ECs=None,
+        dEJ=0, gs=None, # dEJ=(EJ1-EJ2)/(EJ1+EJ2); gs=[01, 12, 13, 02, 03, 23, 0c, 1c, 2c, 3c] ** MAKE SURE TO SPECIFY gs AT 0 FLUX
         qubit_freqs=None, alphas=None, # specify either frequencies + anharmonicities or qubit parameters
         phi_ext=0, # external flux in units of Phi0 applied to coupler
         useZZs=False, ZZs=None, # specify qubit freqs and ZZ shifts to construct H instead, aka dispersive hamiltonian
@@ -750,6 +772,13 @@ class QSwitchTunableTransmonCoupler(QSwitch):
                 self.ECs = ECs
                 self.gs = gs
                 self.dEJ = dEJ
+
+                # self.qubit_freqs = [self.transmon_fge(ECs[i], EJs[i]) for i in range(self.nqubits - 1)]
+                # EJc = self.EJ_flux(EJmax=EJs[-1], phi_ext=phi_ext, dEJ=self.dEJ)
+                # self.qubit_freqs.append(self.transmon_fge(ECs[-1], EJc))
+                # self.alphas = [(not isCavity[i])*(self.transmon_alpha(ECs[i], EJs[i])) for i in range(self.nqubits - 1)]
+                # self.alphas.append(self.transmon_alpha(ECs[-1], EJc))
+
                 transmons = [scq.Transmon(EC=ECs[i], EJ=EJs[i], ng=0, ncut=110, truncated_dim=cutoffs[i]) for i in range(self.nqubits - 1)]
                 transmons.append(scq.TunableTransmon(EJmax=self.EJs[-1], EC=self.ECs[-1], d=self.dEJ, flux=phi_ext, ng=0, ncut=110))
     
@@ -761,6 +790,7 @@ class QSwitchTunableTransmonCoupler(QSwitch):
                 self.qubit_freqs = [evals[i][1] for i in range(self.nqubits)]
                 self.alphas = [(not isCavity[i]) * evals[i][2] - 2*evals[i][1] for i in range(self.nqubits)]
 
+        # create the annihilation ops for each qubit
         self.id_op = qt.tensor(*[qt.qeye(cutoffs[i]) for i in range(self.nqubits)])
         self.a_ops = [None]*self.nqubits
         for q in range(self.nqubits):
@@ -768,13 +798,14 @@ class QSwitchTunableTransmonCoupler(QSwitch):
             aq = qt.tensor(*aq)
             self.a_ops[q] = aq
 
+        # construct qubit hamiltonians
         self.H_no_coupler = 0*self.id_op
         self.H0 = 0*self.id_op
         for q in range(self.nqubits - 1):
             a = self.a_ops[q]
             self.H_no_coupler += 2*np.pi*(self.qubit_freqs[q]*a.dag()*a + 1/2*self.alphas[q]*a.dag()*a.dag()*a*a)
-        a = self.a_ops[-1]
-        self.H0 = self.H_no_coupler + 2*np.pi*(self.qubit_freqs[-1]*a.dag()*a + 1/2*self.alphas[-1]*a.dag()*a.dag()*a*a)
+        ac = self.a_ops[-1]
+        self.H0 = self.H_no_coupler + 2*np.pi*(self.qubit_freqs[-1]*ac.dag()*ac + 1/2*self.alphas[-1]*ac.dag()*ac.dag()*ac*ac)
 
         if not self.useZZs:
             # gs=[01, 12, 13, 02, 03, 23, 0c, 1c, 2c, 3c]
@@ -785,23 +816,31 @@ class QSwitchTunableTransmonCoupler(QSwitch):
             self.H_int_01 = 2*np.pi*self.gs[0] * (a * b.dag() + a.dag() * b)
             self.H_int_0c = 2*np.pi*self.gs[-self.nqubits + 1] * (a * ac.dag() + a.dag() * ac)
             self.H_int_1c = 2*np.pi*self.gs[-self.nqubits + 2] * (b * ac.dag() + b.dag() * ac)
-            self.H_int = self.H_int_01 + self.H_int_0c + self.H_int_1c
+            self.H_int_no_coupler = self.H_int_01
+            self.H_int_coupler = self.H_int_0c + self.H_int_1c
             if not is2Q:
                 c = self.a_ops[2]
                 d = self.a_ops[3]
                 self.H_int_12 = 2*np.pi*self.gs[1] * (b * c.dag() + b.dag() * c)
                 self.H_int_13 = 2*np.pi*self.gs[2] * (b * d.dag() + b.dag() * d)
-                self.H_int += self.H_int_12 + self.H_int_13
-                if len(self.gs) == 6: 
+                self.H_int_no_coupler += self.H_int_12 + self.H_int_13
+
+                if len(self.gs) == 10: 
                     self.H_int_02 = 2*np.pi*self.gs[3] * (a * c.dag() + a.dag() * c)
                     self.H_int_03 = 2*np.pi*self.gs[4] * (a * d.dag() + a.dag() * d)
                     self.H_int_23 = 2*np.pi*self.gs[5] * (c * d.dag() + c.dag() * d)
+                    self.H_int_no_coupler += self.H_int_02 + self.H_int_03 + self.H_int_23
+
                     self.H_int_2c = 2*np.pi*self.gs[-2] * (c * ac.dag() + c.dag() * ac)
                     self.H_int_3c = 2*np.pi*self.gs[-1] * (d * ac.dag() + d.dag() * ac)
-                    self.H_int += self.H_int_02 + self.H_int_03 + self.H_int_23 + self.H_int2c + self.H_int3c
+                    self.H_int_coupler += self.H_int_2c + self.H_int_3c
+            # make sure to put in flux dependence of g
+            self.H_int = self.H_int_no_coupler + self.H_int_coupler * np.sqrt(self.EJ_flux(EJmax=1, phi_ext=self.phi_ext, dEJ=self.dEJ)) # sqrt here because it goes as impedance
+
         else: # use ZZ shift values: what is the adjustment to qi when qj is in e?
             assert False, 'not implemented ZZ shift instantiation yet!'
             ZZs = (self.ZZs + np.transpose(self.ZZs))/2 # average over J_ml and J_lm
+            self.H_int_no_coupler = 0*self.H_no_coupler
             self.H_int = 0*self.H_no_coupler
             for i in range(len(ZZs)):
                 for j in range(i+1, len(ZZs[0])):
@@ -823,15 +862,16 @@ class QSwitchTunableTransmonCoupler(QSwitch):
 
     def get_H_at_phi_ext(self, phi_ext):
         transmon = scq.TunableTransmon(EJmax=self.EJs[-1], EC=self.ECs[-1], d=self.dEJ, flux=phi_ext, ng=0, ncut=110)
-    
         evals, evecs = transmon.eigensys(evals_count=self.cutoffs[-1])
         evals -= evals[0]
         qubit_freq = evals[1]
         alpha = (not self.isCavity[-1]) * evals[2] - 2*evals[1]
-        a = self.a_ops[-1]
-        coupler_H0 = 2*np.pi*(qubit_freq*a.dag()*a + 1/2*alpha*a.dag()*a.dag()*a*a)
+        ac = self.a_ops[-1]
+        coupler_H0 = 2*np.pi*(qubit_freq*ac.dag()*ac + 1/2*alpha*ac.dag()*ac.dag()*ac*ac)
         H0 = self.H_no_coupler +  coupler_H0
-        H = H0 + self.H_int
+
+        H_int = self.H_int_no_coupler + self.H_int_coupler * np.sqrt(self.EJ_flux(EJmax=1, phi_ext=self.phi_ext, dEJ=self.dEJ))
+        H = H0 + H_int
         return coupler_H0, H0, H
         
     def update_H(self, phi_ext, solve_esys=True):
@@ -863,23 +903,40 @@ class QSwitchTunableTransmonCoupler(QSwitch):
         return self.find_dressed(self.make_bare(levels), esys=esys)[2]
 
     # ======================================= #
-    # Modified sequence constructor for flux drive: goal is to apply (wc(t) - wc0)a^dag
+    # Modified sequence constructor for flux drive: goal is to apply (wc(t) - wc0)a^dag*a
     # ======================================= #
-    def flux_drive_modulation(self, dc_phi_ext):
+    def flux_drive_modulation_wc(self, dc_phi_ext):
+        assert self.phi_ext == 0, "This function assumes the qubit frequencies were evaluated at phi=0"
         def modulation(t, wd, amp, phase):
             return self.qubit_freqs[-1]*(np.sqrt(np.abs(np.cos(np.pi*(dc_phi_ext + amp*np.cos(wd*t + phase))))) - 1)
         return modulation
 
+    def flux_drive_modulation_H_int_coupler(self, dc_phi_ext):
+        assert self.phi_ext == 0, "This function assumes the qubit frequencies were evaluated at phi=0"
+        def modulation(t, wd, amp, phase):
+            phi_ext_osc = dc_phi_ext + amp*np.cos(wd*t + phase)
+            return np.sqrt(self.EJ_flux(EJmax=1, phi_ext=phi_ext_osc, dEJ=self.dEJ)) - 1
+        return modulation
+
     def flux_drive_sequence(self, dc_phi_ext, seq, seq_func, **kwargs):
         print(dc_phi_ext)
-        kwargs['modulation'] = self.flux_drive_modulation(dc_phi_ext)
+        kwargs['modulation'] = self.flux_drive_modulation_wc(dc_phi_ext)
+        t_start = seq.time + (kwargs['t_offset'] if 't_offset' in kwargs else 0)
+        seq_func(**kwargs)
+        kwargs['modulation'] = self.flux_drive_modulation_H_int_coupler(dc_phi_ext)
+        kwargs['t_start'] = t_start
         seq_func(**kwargs)
 
     def H_solver_flux_drive(self, seq:PulseSequence, H=None):
         if H is None: H = self.H
         H_solver = [H]
-        for pulse_i, pulse_func in enumerate(seq.get_pulse_seq()):
-            H_solver.append([self.flux_drive_ops[seq.drive_qubits[pulse_i]], pulse_func])
+        pulse_seq = seq.get_pulse_seq()
+        for pulse_i in range(0, len(pulse_seq), 2):
+            print('pulse_i', pulse_i)
+            pulse_func_wc = pulse_seq[pulse_i]
+            pulse_func_H_int_coupler = pulse_seq[pulse_i + 1]
+            H_solver.append([self.flux_drive_ops[seq.drive_qubits[pulse_i]], pulse_func_wc])
+            H_solver.append([self.H_int_coupler, pulse_func_H_int_coupler])
         return H_solver
 
 
