@@ -42,20 +42,15 @@ class QSwitch():
     """
     def __init__(
         self,
-        EJs=None, ECs=None, gs=None, # gs=[01, 12, 13, 02, 03, 23]
+        EJs=None, ECs=None, gs=None, # gs=matrix with size corresponding to number of qubits
         qubit_freqs=None, alphas=None, # specify either frequencies + anharmonicities or qubit parameters
         useZZs=False, ZZs=None, # specify qubit freqs and ZZ shifts to construct H instead, aka dispersive hamiltonian
         cutoffs=None,
-        is2Q=False, # Model 2 coupled transmons instead of full QRAM module
         isCavity=[False, False, False, False]) -> None:
 
-        self.is2Q = is2Q
         self.useZZs = useZZs
-        self.nqubits = 2 + 2*(not is2Q)
-
-        if is2Q and cutoffs is None: cutoffs = [5, 5]
-        elif cutoffs is None: cutoffs = [4,5,4,4]
         self.cutoffs = cutoffs
+        self.nqubits = len(cutoffs)
 
         self.alphas = np.array(alphas)
 
@@ -65,8 +60,10 @@ class QSwitch():
             self.ZZs = np.array(ZZs)
         else:
             assert gs is not None
-            if np.array(gs).ndim == 0:
-                gs = np.array([gs])
+            gs = np.array(gs)
+            assert len(gs.shape) == 2, 'Need a 2D matrix for gs!'
+            assert gs.shape[0] == gs.shape[1], 'Need a square matrix for gs!'
+            assert np.allclose(gs, gs.T), 'Need a symmetric matrix for gs!'
             self.gs = gs
 
             if qubit_freqs is not None and alphas is not None:
@@ -88,59 +85,46 @@ class QSwitch():
                 self.qubit_freqs = [evals[i][1] for i in range(self.nqubits)]
                 self.alphas = [(not isCavity[i]) * evals[i][2] - 2*evals[i][1] for i in range(self.nqubits)]
 
-        a = qt.tensor(qt.destroy(cutoffs[0]), qt.qeye(cutoffs[1])) # source
-        b = qt.tensor(qt.qeye(cutoffs[0]), qt.destroy(cutoffs[1])) # switch
-        self.a_ops = [a, b]
+        self.a_ops = [None]*self.nqubits
+        for q in range(self.nqubits):
+            aq = [qt.qeye(cutoffs[i]) if i != q else qt.destroy(cutoffs[i]) for i in range(self.nqubits)]
+            aq = qt.tensor(*aq)
+            self.a_ops[q] = aq
 
-        if not is2Q:
-            a = qt.tensor(qt.destroy(cutoffs[0]), qt.qeye(cutoffs[1]), qt.qeye(cutoffs[2]), qt.qeye(cutoffs[3])) # source
-            b = qt.tensor(qt.qeye(cutoffs[0]), qt.destroy(cutoffs[1]), qt.qeye(cutoffs[2]), qt.qeye(cutoffs[3])) # switch
-            c = qt.tensor(qt.qeye(cutoffs[0]), qt.qeye(cutoffs[1]), qt.destroy(cutoffs[2]), qt.qeye(cutoffs[3])) # out1
-            d = qt.tensor(qt.qeye(cutoffs[0]), qt.qeye(cutoffs[1]), qt.qeye(cutoffs[2]), qt.destroy(cutoffs[3])) # out2
-            self.a_ops = [a, b, c, d]
+        self.H0 = 0*self.a_ops[0]
 
-        self.H_source = 2*np.pi*(self.qubit_freqs[0]*a.dag()*a + 1/2*self.alphas[0]*a.dag()*a.dag()*a*a)
-        self.H_switch = 2*np.pi*(self.qubit_freqs[1]*b.dag()*b + 1/2*self.alphas[1]*b.dag()*b.dag()*b*b)
-        self.H0 = self.H_source + self.H_switch
-        if not is2Q:
-            self.H_out1 = 2*np.pi*(self.qubit_freqs[2]*c.dag()*c + 1/2*self.alphas[2]*c.dag()*c.dag()*c*c)
-            self.H_out2 = 2*np.pi*(self.qubit_freqs[3]*d.dag()*d + 1/2*self.alphas[3]*d.dag()*d.dag()*d*d)
-            self.H0 += self.H_out1 + self.H_out2
+        self.H_Qis = []
+        for q in range(self.nqubits):
+            a = self.a_ops[q]
+            H_q = 2*np.pi*(self.qubit_freqs[q]*a.dag()*a + 1/2*self.alphas[q]*a.dag()*a.dag()*a*a)
+            self.H_Qis.append(H_q)
+            self.H0 += H_q
 
         if not self.useZZs:
-            self.H_int_01 = 2*np.pi*self.gs[0] * (a * b.dag() + a.dag() * b)
-            self.H_int = self.H_int_01
-            if not is2Q:
-                self.H_int_12 = 2*np.pi*self.gs[1] * (b * c.dag() + b.dag() * c)
-                self.H_int_13 = 2*np.pi*self.gs[2] * (b * d.dag() + b.dag() * d)
-                self.H_int += self.H_int_12 + self.H_int_13
-                if len(self.gs) == 6: 
-                    self.H_int_02 = 2*np.pi*self.gs[3] * (a * c.dag() + a.dag() * c)
-                    self.H_int_03 = 2*np.pi*self.gs[4] * (a * d.dag() + a.dag() * d)
-                    self.H_int_23 = 2*np.pi*self.gs[5] * (c * d.dag() + c.dag() * d)
-                    self.H_int += self.H_int_02 + self.H_int_03 + self.H_int_23
+            self.H_int = 0*self.H0
+            for i in range(len(self.gs)):
+                for j in range(i+1, len(self.gs[0])):
+                    a = self.a_ops[i]
+                    b = self.a_ops[j]
+                    self.H_int += 2*np.pi*self.gs[i, j] * (a * b.dag() + a.dag() * b)
         else: # use ZZ shift values: what is the adjustment to qi when qj is in e?
             ZZs = (self.ZZs + np.transpose(self.ZZs))/2 # average over J_ml and J_lm
             self.H_int = 0*self.H0
             for i in range(len(ZZs)):
                 for j in range(i+1, len(ZZs[0])):
-                    tensor = [qt.qeye(cutoffs[q]) for q in range(self.nqubits)]
-                    tensor[i] = qt.destroy(cutoffs[i]).dag() * qt.destroy(cutoffs[i])
-                    tensor[j] = qt.destroy(cutoffs[j]).dag() * qt.destroy(cutoffs[j])
-                    self.H_int += 2*np.pi*ZZs[i, j]*qt.tensor(*tensor) # adag_i * a_i * adag_j * a_j
+                    a = self.a_ops[i]
+                    b = self.a_ops[j]
+                    self.H_int += 2*np.pi*ZZs[i, j] * (a.dag() * a * b.dag() * b)
         self.H = self.H0 + self.H_int
         self.esys = self.H.eigenstates()
 
         # Time independent drive op w/o drive amp.
         # This assumes time dependence given by sin(wt).
         # If given by exp(+/-iwt), need to divide by 2.
-        self.drive_ops = [
-            2*np.pi*(a.dag()+a),
-            2*np.pi*(b.dag()+b),
-        ]
-        if not is2Q:
-            self.drive_ops.append(2*np.pi*(c.dag()+c))
-            self.drive_ops.append(2*np.pi*(d.dag()+d))
+        self.drive_ops = []
+        for q in range(self.nqubits):
+            self.drive_ops.append(2*np.pi*(self.a_ops[q].dag() + self.a_ops[q]))
+
 
     """
     H (not incl H_drive) in the rotating frame of a drive at wd
@@ -271,7 +255,7 @@ class QSwitch():
         for q_spec in range(self.nqubits):
             for q_pi in range( self.nqubits):
                 if q_pi == q_spec: continue
-                ZZ_mat[q_spec, q_pi] = get_ZZ(q_spec, q_pi)
+                ZZ_mat[q_spec, q_pi] = self.get_ZZ(q_spec, q_pi)
         return ZZ_mat
 
 
@@ -417,6 +401,7 @@ class QSwitch():
         elif type == 'adiabatic':
             beta = kwargs['beta']
             return 1/2 / (g_eff * np.arctan(np.sinh(beta)) / beta)
+        else: assert False, 'Pulse type not implemented'
         return np.inf
 
     """
@@ -919,7 +904,7 @@ class QSwitchTunableTransmonCoupler(QSwitch):
         return modulation
 
     def flux_drive_sequence(self, dc_phi_ext, seq, seq_func, **kwargs):
-        print(dc_phi_ext)
+        # print(dc_phi_ext)
         kwargs['modulation'] = self.flux_drive_modulation_wc(dc_phi_ext)
         t_start = seq.time + (kwargs['t_offset'] if 't_offset' in kwargs else 0)
         seq_func(**kwargs)
@@ -932,7 +917,7 @@ class QSwitchTunableTransmonCoupler(QSwitch):
         H_solver = [H]
         pulse_seq = seq.get_pulse_seq()
         for pulse_i in range(0, len(pulse_seq), 2):
-            print('pulse_i', pulse_i)
+            # print('pulse_i', pulse_i)
             pulse_func_wc = pulse_seq[pulse_i]
             pulse_func_H_int_coupler = pulse_seq[pulse_i + 1]
             H_solver.append([self.flux_drive_ops[seq.drive_qubits[pulse_i]], pulse_func_wc])
