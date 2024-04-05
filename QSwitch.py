@@ -48,6 +48,7 @@ class QSwitch():
         cutoffs=None,
         isCavity=[False, False, False, False]) -> None:
 
+        assert cutoffs is not None
         self.useZZs = useZZs
         self.cutoffs = cutoffs
         self.nqubits = len(cutoffs)
@@ -55,7 +56,8 @@ class QSwitch():
         self.alphas = np.array(alphas)
 
         if self.useZZs:
-            assert qubit_freqs is not None and ZZs is not None
+            assert qubit_freqs is not None
+            assert ZZs is not None
             self.qubit_freqs = np.array(qubit_freqs) # w*adag*a = w*sigmaZ/2
             self.ZZs = np.array(ZZs)
         else:
@@ -102,16 +104,16 @@ class QSwitch():
 
         if not self.useZZs:
             self.H_int = 0*self.H0
-            for i in range(len(self.gs)):
-                for j in range(i+1, len(self.gs[0])):
+            for i in range(self.nqubits):
+                for j in range(i+1, self.nqubits):
                     a = self.a_ops[i]
                     b = self.a_ops[j]
                     self.H_int += 2*np.pi*self.gs[i, j] * (a * b.dag() + a.dag() * b)
         else: # use ZZ shift values: what is the adjustment to qi when qj is in e?
             ZZs = (self.ZZs + np.transpose(self.ZZs))/2 # average over J_ml and J_lm
             self.H_int = 0*self.H0
-            for i in range(len(ZZs)):
-                for j in range(i+1, len(ZZs[0])):
+            for i in range(self.nqubits):
+                for j in range(i+1, self.nqubits):
                     a = self.a_ops[i]
                     b = self.a_ops[j]
                     self.H_int += 2*np.pi*ZZs[i, j] * (a.dag() * a * b.dag() * b)
@@ -244,9 +246,12 @@ class QSwitch():
         eestate = gestate[:qA] + qA_state + gestate[qA+1:]
         qfreq_shift = self.get_base_wd(gestate, eestate, keep_sign=True)/2/np.pi
 
+        # print(abs(qfreq), abs(qfreq_shift))
+
         # print(estate, self.get_base_wd(gstate, estate)/2/np.pi)
         # print(gestate, self.get_base_wd(gstate, gestate)/2/np.pi)
         # print(eestate, self.get_base_wd(gstate, eestate)/2/np.pi)
+        # return abs(qfreq_shift) - abs(qfreq)
         return qfreq_shift - qfreq
 
 
@@ -266,11 +271,11 @@ class QSwitch():
     # Getting the right pulse frequencies
     # ======================================= #
     """
-    Drive frequency b/w state1 and state2 (strings representing state) 
+    Drive frequency from state1 to state2 (strings representing state) 
     Stark shift from drive is ignored
     """
     def get_base_wd(self, state1, state2, keep_sign=False, esys=None, **kwargs):
-        wd = qt.expect(self.H, self.state(state1, esys=esys)) - qt.expect(self.H, self.state(state2, esys=esys))
+        wd = qt.expect(self.H, self.state(state2, esys=esys)) - qt.expect(self.H, self.state(state1, esys=esys))
         if keep_sign: return wd
         return np.abs(wd)
 
@@ -373,7 +378,7 @@ class QSwitch():
     Pi pulse length b/w state1 and state2 (strings representing state)
     amp: freq
     """
-    def get_Tpi(self, state1, state2, amp, drive_qubit=1, type='const', phi_ext=None, esys=None, **kwargs):
+    def get_Tpi(self, state1, state2, amp, drive_qubit=1, pihalf=False, type='const', phi_ext=None, esys=None, **kwargs):
         if esys is None: esys = self.esys
         if phi_ext is not None:
             coupler_H0, H0, H = self.get_H_at_phi_ext(phi_ext)
@@ -390,19 +395,19 @@ class QSwitch():
         elif type=='gauss':
             if 'sigma_n' not in kwargs or kwargs['sigma_n'] is None: sigma_n = 4
             else: sigma_n = kwargs['sigma_n']
-            return 1/2 / (g_eff * np.sqrt(2*np.pi) * sp.special.erf(sigma_n/2 / np.sqrt(2)))
+            tpi = 1/2 / (g_eff * np.sqrt(2*np.pi) * sp.special.erf(sigma_n/2 / np.sqrt(2)))
         elif type=='flat_top':
             if 'sigma_n' not in kwargs or kwargs['sigma_n'] is None: sigma_n = 2
             else: sigma_n = kwargs['sigma_n']
             if 't_ramp' not in kwargs or kwargs['t_ramp'] is None: t_ramp = 15
             else: t_ramp = kwargs['t_ramp']
             t_ramp_sigma = t_ramp/sigma_n
-            return (1 + 2*g_eff*np.sqrt(2*np.pi)*t_ramp_sigma*sp.special.erf(sigma_n/np.sqrt(2))) / (2*g_eff)
+            tpi = (1 + 2*g_eff*np.sqrt(2*np.pi)*t_ramp_sigma*sp.special.erf(sigma_n/np.sqrt(2))) / (2*g_eff)
         elif type == 'adiabatic':
             beta = kwargs['beta']
-            return 1/2 / (g_eff * np.arctan(np.sinh(beta)) / beta)
+            tpi = 1/2 / (g_eff * np.arctan(np.sinh(beta)) / beta)
         else: assert False, 'Pulse type not implemented'
-        return np.inf
+        return tpi 
 
     """
     Add a pi pulse between state1 and state2 immediately after the previous pulse
@@ -414,17 +419,20 @@ class QSwitch():
     """
     Add a pi pulse between state1 and state2 at time offset from the end of the 
     previous pulse
+    Setting amp is None is used as a flag to just increment wait time corresponding to the shape specified, not play a pulse
     """
     def add_precise_pi_pulse(
         self, seq:PulseSequence, state1:str, state2:str, amp, pihalf=False,
         drive_qubit=1, wd=None, phase=0, type='const',
         t_offset=0, t_pulse=None, t_pulse_factor=1, verbose=True, **kwargs
         ):
-        if t_pulse == None:
-            t_pulse = self.get_Tpi(state1, state2, amp=amp, drive_qubit=drive_qubit, type=type, **kwargs)
-            if pihalf: t_pulse /= 2
-        t_pulse *= t_pulse_factor
-        if wd == None: wd = self.get_wd(state1, state2, amp, drive_qubit=drive_qubit, verbose=verbose, **kwargs)
+        if amp is None: assert t_pulse is not None
+        else:
+            if t_pulse is None:
+                t_pulse = self.get_Tpi(state1, state2, amp=amp, drive_qubit=drive_qubit, type=type, **kwargs)
+                if pihalf: t_pulse /= 2
+            t_pulse *= t_pulse_factor
+            if wd is None: wd = self.get_wd(state1, state2, amp, drive_qubit=drive_qubit, verbose=verbose, **kwargs)
         if type == 'const':
             if 't_rise' not in kwargs.keys() or kwargs['t_rise'] is None: kwargs['t_rise'] = 1
             seq.const_pulse(
@@ -546,7 +554,8 @@ class QSwitch():
         if H is None: H = self.H
         H_solver = [H]
         for pulse_i, pulse_func in enumerate(seq.get_pulse_seq()):
-            H_solver.append([self.drive_ops[seq.drive_qubits[pulse_i]], pulse_func])
+            if seq.get_pulse_amps()[pulse_i] is not None:
+                H_solver.append([self.drive_ops[seq.drive_qubits[pulse_i]], pulse_func])
         return H_solver
 
     def H_solver_array(self, seq:PulseSequence, times, H=None):
@@ -554,11 +563,13 @@ class QSwitch():
         if H is None: H = self.H
         H_solver = [H]
         for pulse_i, pulse_func in enumerate(seq.get_pulse_seq()):
-            waveform = np.array([pulse_func(t, None) for t in times])
-            H_solver.append([self.drive_ops[seq.drive_qubits[pulse_i]], waveform])
+            if seq.get_pulse_amps()[pulse_i] is not None:
+                waveform = np.array([pulse_func(t, None) for t in times])
+                H_solver.append([self.drive_ops[seq.drive_qubits[pulse_i]], waveform])
         return H_solver
 
     def H_solver_str(self, seq:PulseSequence):
+        assert False, 'this has not been debugged in so long, no guarantee of working as expected'
         H_solver = [self.H]
         pulse_str_drive_qubit = seq.get_pulse_str()
         for drive_qubit, pulse_str in enumerate(pulse_str_drive_qubit):
@@ -573,23 +584,24 @@ class QSwitch():
         H_solver = [None]
         qubit_frame_freqs = [0]*self.nqubits
         for pulse_i, envelope_func in enumerate(seq.get_envelope_seq()):
-            q = seq.get_drive_qubits()[pulse_i]
-            fd = seq.get_pulse_freqs()[pulse_i]
-            if not qubit_frame_freqs[q]: qubit_frame_freqs[q] = fd
-            else: assert fd == qubit_frame_freqs[q], f'Must have just a single rotating frame! {fd} does not match first freq {qubit_frame_freqs[q]}'
-            if hasattr(envelope_func, "__len__"):
-                envelope_func_I = envelope_func[0]
-                envelope_func_Q = envelope_func[1]
-                a_op_rot_I = self.a_ops[seq.drive_qubits[pulse_i]] * np.exp(-1j*seq.get_pulse_phases()[pulse_i])
-                a_op_rot_Q = self.a_ops[seq.drive_qubits[pulse_i]] * np.exp(-1j*seq.get_pulse_phases()[pulse_i]-1j*np.pi/2)
-                H_solver.append([seq.get_pulse_amps()[pulse_i]/2*(a_op_rot_I.dag() + a_op_rot_I)*2*np.pi, envelope_func_I])
-                H_solver.append([seq.get_pulse_amps()[pulse_i]/2*(a_op_rot_Q.dag() + a_op_rot_Q)*2*np.pi, envelope_func_Q])
-            else:
-                a_op_rot = self.a_ops[seq.get_drive_qubits()[pulse_i]] * np.exp(1j*seq.get_pulse_phases()[pulse_i])
-                H_solver.append([
-                    seq.get_pulse_amps()[pulse_i]/2*(a_op_rot + a_op_rot.dag())*2*np.pi,
-                    envelope_func
-                    ])
+            if seq.get_pulse_amps()[pulse_i] is not None:
+                q = seq.get_drive_qubits()[pulse_i]
+                fd = seq.get_pulse_freqs()[pulse_i]
+                if not qubit_frame_freqs[q]: qubit_frame_freqs[q] = fd
+                else: assert fd == qubit_frame_freqs[q], f'Must have just a single rotating frame! {fd} does not match first freq {qubit_frame_freqs[q]}'
+                if hasattr(envelope_func, "__len__"):
+                    envelope_func_I = envelope_func[0]
+                    envelope_func_Q = envelope_func[1]
+                    a_op_rot_I = self.a_ops[seq.drive_qubits[pulse_i]] * np.exp(-1j*seq.get_pulse_phases()[pulse_i])
+                    a_op_rot_Q = self.a_ops[seq.drive_qubits[pulse_i]] * np.exp(-1j*seq.get_pulse_phases()[pulse_i]-1j*np.pi/2)
+                    H_solver.append([seq.get_pulse_amps()[pulse_i]/2*(a_op_rot_I.dag() + a_op_rot_I)*2*np.pi, envelope_func_I])
+                    H_solver.append([seq.get_pulse_amps()[pulse_i]/2*(a_op_rot_Q.dag() + a_op_rot_Q)*2*np.pi, envelope_func_Q])
+                else:
+                    a_op_rot = self.a_ops[seq.get_drive_qubits()[pulse_i]] * np.exp(1j*seq.get_pulse_phases()[pulse_i])
+                    H_solver.append([
+                        seq.get_pulse_amps()[pulse_i]/2*(a_op_rot + a_op_rot.dag())*2*np.pi,
+                        envelope_func
+                        ])
         # qubit_frame_freqs = self.qubit_freqs
         H_solver[0] = self.H_rot_qubits(qubit_frame_freqs=qubit_frame_freqs)
         return H_solver
@@ -599,22 +611,23 @@ class QSwitch():
         # H_solver = [self.H_rot_qubits()]
         H_solver = [None]
         for pulse_i, envelope_func in enumerate(seq.get_envelope_seq()):
-            q = seq.get_drive_qubits()[pulse_i]
-            fd = seq.get_pulse_freqs()[pulse_i]
-            assert np.isclose(2*np.pi*fd, wframe), f'Your hamiltonian will not be correct with this function if your rotating frame is not the same as your drive frequency! {fd} does not match frame freq {wframe/2/np.pi}'
-            if hasattr(envelope_func, "__len__"):
-                envelope_func_I = envelope_func[0]
-                envelope_func_Q = envelope_func[1]
-                a_op_rot_I = self.a_ops[seq.drive_qubits[pulse_i]] * np.exp(-1j*seq.get_pulse_phases()[pulse_i])
-                a_op_rot_Q = self.a_ops[seq.drive_qubits[pulse_i]] * np.exp(-1j*seq.get_pulse_phases()[pulse_i]-1j*np.pi/2)
-                H_solver.append([seq.get_pulse_amps()[pulse_i]/2*(a_op_rot_I.dag() + a_op_rot_I)*2*np.pi, envelope_func_I])
-                H_solver.append([seq.get_pulse_amps()[pulse_i]/2*(a_op_rot_Q.dag() + a_op_rot_Q)*2*np.pi, envelope_func_Q])
-            else:
-                a_op_rot = self.a_ops[seq.get_drive_qubits()[pulse_i]] * np.exp(1j*seq.get_pulse_phases()[pulse_i])
-                H_solver.append([
-                    seq.get_pulse_amps()[pulse_i]/2*(a_op_rot + a_op_rot.dag())*2*np.pi,
-                    envelope_func
-                    ])
+            if seq.get_pulse_amps()[pulse_i] is not None:
+                q = seq.get_drive_qubits()[pulse_i]
+                fd = seq.get_pulse_freqs()[pulse_i]
+                assert np.isclose(2*np.pi*fd, wframe), f'Your hamiltonian will not be correct with this function if your rotating frame is not the same as your drive frequency! {fd} does not match frame freq {wframe/2/np.pi}'
+                if hasattr(envelope_func, "__len__"):
+                    envelope_func_I = envelope_func[0]
+                    envelope_func_Q = envelope_func[1]
+                    a_op_rot_I = self.a_ops[seq.drive_qubits[pulse_i]] * np.exp(-1j*seq.get_pulse_phases()[pulse_i])
+                    a_op_rot_Q = self.a_ops[seq.drive_qubits[pulse_i]] * np.exp(-1j*seq.get_pulse_phases()[pulse_i]-1j*np.pi/2)
+                    H_solver.append([seq.get_pulse_amps()[pulse_i]/2*(a_op_rot_I.dag() + a_op_rot_I)*2*np.pi, envelope_func_I])
+                    H_solver.append([seq.get_pulse_amps()[pulse_i]/2*(a_op_rot_Q.dag() + a_op_rot_Q)*2*np.pi, envelope_func_Q])
+                else:
+                    a_op_rot = self.a_ops[seq.get_drive_qubits()[pulse_i]] * np.exp(1j*seq.get_pulse_phases()[pulse_i])
+                    H_solver.append([
+                        seq.get_pulse_amps()[pulse_i]/2*(a_op_rot + a_op_rot.dag())*2*np.pi,
+                        envelope_func
+                        ])
         H_solver[0] = self.H_rot(wd=wframe)
         import h5py
         h = H_solver[0].full()
@@ -643,44 +656,47 @@ class QSwitch():
 
     # ======================================= #
     # Time evolution of states
+    # Note having max_step set is important - if there is a long wait time at the beginning sometimes this can cause the solver
+    # to miss the later pulses!
     # ======================================= #
-    def evolve(self, psi0, seq:PulseSequence, times, H=None, c_ops=None, nsteps=1000, use_str_solve=False, progress=True):
+    
+    def evolve(self, psi0, seq:PulseSequence, times, H=None, c_ops=None, nsteps=1000, max_step=0.1, use_str_solve=False, progress=True):
         if not progress: progress = None
         if c_ops is None:
             if not use_str_solve:
-                return qt.mesolve(self.H_solver(seq=seq, H=H), psi0, times, progress_bar=progress, options=qt.Options(nsteps=nsteps)).states
-            return qt.mesolve(self.H_solver_str(seq), psi0, times, progress_bar=progress, options=qt.Options(nsteps=nsteps)).states
+                return qt.mesolve(self.H_solver(seq=seq, H=H), psi0, times, progress_bar=progress, options=qt.Options(nsteps=nsteps, max_step=max_step)).states
+            return qt.mesolve(self.H_solver_str(seq), psi0, times, progress_bar=progress, options=qt.Options(nsteps=nsteps, max_step=max_step)).states
         else:
             full_result = qt.mcsolve(self.H_solver_str(seq), psi0, times, c_ops, progress_bar=progress, options=qt.Options(nsteps=nsteps))
             return np.sum(full_result.states, axis=0)/full_result.ntraj
 
-    def evolve_array(self, psi0, seq:PulseSequence, times, H=None, c_ops=None, nsteps=1000, use_str_solve=False, progress=True):
+    def evolve_array(self, psi0, seq:PulseSequence, times, H=None, c_ops=None, nsteps=1000, max_step=0.1, use_str_solve=False, progress=True):
         if not progress: progress = None
         if c_ops is None:
-            return qt.mesolve(self.H_solver_array(seq=seq, times=times, H=H), psi0, times, progress_bar=progress, options=qt.Options(nsteps=nsteps)).states
+            return qt.mesolve(self.H_solver_array(seq=seq, times=times, H=H), psi0, times, progress_bar=progress, options=qt.Options(nsteps=nsteps, max_step=max_step)).states
         else:
-            full_result = qt.mcsolve(self.H_solver_array(seq, times=times, H=H), psi0, times, c_ops, progress_bar=progress, options=qt.Options(nsteps=nsteps))
+            full_result = qt.mcsolve(self.H_solver_array(seq, times=times, H=H), psi0, times, c_ops, progress_bar=progress, options=qt.Options(nsteps=nsteps, max_step=max_step))
             return np.sum(full_result.states, axis=0)/full_result.ntraj
 
-    def evolve_rot_frame(self, psi0, seq:PulseSequence, times, c_ops=None, nsteps=1000, progress=True):
+    def evolve_rot_frame(self, psi0, seq:PulseSequence, times, c_ops=None, nsteps=1000, max_step=None, progress=True):
         assert c_ops == None
         if not progress: progress = None
         if c_ops is None:
-            return qt.mesolve(self.H_solver_rot(seq), psi0, times, progress_bar=progress, options=qt.Options(nsteps=nsteps)).states
+            return qt.mesolve(self.H_solver_rot(seq), psi0, times, progress_bar=progress, options=qt.Options(nsteps=nsteps, max_step=max_step)).states
         else:
             pass
             # full_result = qt.mcsolve(self.H_solver_str(seq), psi0, times, c_ops, progress_bar=progress, options=qt.Options(nsteps=nsteps))
             # return np.sum(full_result.states, axis=0)/full_result.ntraj
     
-    def evolve_unrotate(self, times, result=None, psi0=None, seq:PulseSequence=None, H=None, c_ops=None, nsteps=1000, progress=True):
+    def evolve_unrotate(self, times, result=None, psi0=None, seq:PulseSequence=None, H=None, c_ops=None, nsteps=1000, max_step=0.1, progress=True):
         # if not progress: progress = None
         # if c_ops is None:
-        #     return qt.mesolve(self.H_solver_unrotate(seq=seq, H=H), psi0, times, progress_bar=progress, options=qt.Options(nsteps=nsteps)).states
+        #     return qt.mesolve(self.H_solver_unrotate(seq=seq, H=H), psi0, times, progress_bar=progress, options=qt.Options(nsteps=nsteps, max_step=max_step)).states
         # else:
-        #     full_result = qt.mcsolve(self.H_solver_unrotate(seq), psi0, times, c_ops, progress_bar=progress, options=qt.Options(nsteps=nsteps))
+        #     full_result = qt.mcsolve(self.H_solver_unrotate(seq), psi0, times, c_ops, progress_bar=progress, options=qt.Options(nsteps=nsteps, max_step=max_step))
         #     return np.sum(full_result.states, axis=0)/full_result.ntraj
         if result is None:
-            result = self.evolve(psi0=psi0, times=times, seq=seq, H=H, c_ops=c_ops, nsteps=nsteps, progress=progress)
+            result = self.evolve(psi0=psi0, times=times, seq=seq, H=H, c_ops=c_ops, nsteps=nsteps, max_step=max_step, progress=progress)
         if H is None:
             H = self.H
             esys = self.esys
@@ -867,6 +883,7 @@ class QSwitchTunableTransmonCoupler(QSwitch):
         else: self.esys = None
 
 
+    # go from state1 -> state2
     def get_base_wd(self, state1, state2, keep_sign=False, phi_ext=None, esys=None, **kwargs):
         assert not (phi_ext is None and esys is not None)
         if phi_ext is None and esys is None:
@@ -876,7 +893,7 @@ class QSwitchTunableTransmonCoupler(QSwitch):
             coupler_H0, H0, H = self.get_H_at_phi_ext(phi_ext)
             if esys is not None: esys = H.eigenstates()
 
-        wd = qt.expect(H, self.state(state1, esys=esys)) - qt.expect(H, self.state(state2, esys=esys))
+        wd = qt.expect(H, self.state(state2, esys=esys)) - qt.expect(H, self.state(state1, esys=esys))
         if keep_sign: return wd
         return np.abs(wd)
 

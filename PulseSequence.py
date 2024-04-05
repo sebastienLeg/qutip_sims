@@ -102,6 +102,25 @@ class PulseSequence:
 
     def get_flux_transitions(self):
         return np.array(self.flux_transitions)
+    
+    def get_end_time(self): # end time of full pulse sequence, including empty wait times
+        end_pulse_times_q = dict()
+        for q, pulse_len, start_time in zip(self.get_drive_qubits(), self.get_pulse_lengths(), self.get_start_times()):
+            if str(q) not in end_pulse_times_q.keys():
+                end_pulse_times_q.update({str(q):start_time + pulse_len})
+            else: end_pulse_times_q.update({str(q):max((end_pulse_times_q[str(q)], start_time + pulse_len))})
+
+        end_pulse_times_q_arr = []
+        for q in end_pulse_times_q.keys():
+            end_pulse_times_q_arr.append(end_pulse_times_q[q])
+
+        end_time = 0
+        if len(end_pulse_times_q_arr) > 0:
+            end_time = max(end_pulse_times_q_arr)
+        return end_time
+            
+
+
 
 
     """
@@ -126,36 +145,43 @@ class PulseSequence:
     phase: radians
     Returns the total length of the sequence.
     """
-    def const_pulse(self, wd=None, amp=None, t_pulse=None, pulse_levels:Tuple[str,str]=None, envelope:Function=None, modulation:Function=None, drive_qubit=1, t_offset=0, t_start=None, t_rise=1, phase=0):
-        assert None not in [wd, amp, pulse_levels, t_pulse]
+    def const_pulse(self, wd=None, amp=None, t_pulse=None, pulse_levels:Tuple[str,str]=None, modulation:Function=None, drive_qubit=1, t_offset=0, t_start=None, t_rise=1, phase=0):
+        assert None not in [t_pulse, drive_qubit]
         if t_start is None: t_start = self.time + t_offset
-        self.start_times.append(t_start)
-        if envelope is None:
+        self.time = t_start + t_pulse
+
+        envelope = None
+        drive_func = None
+        c_str = None
+        if None in pulse_levels: pulse_levels = None
+
+        if amp is not None:
+            assert None not in [wd, pulse_levels]
             def envelope(t, args=None):
                     t -= t_start 
                     if 0 <= t < t_rise: return np.sin(np.pi*t/2/t_rise)**2
                     elif t_rise <= t < t_pulse - t_rise: return 1
                     elif t_pulse - t_rise <= t < t_pulse: return np.sin(np.pi*(t_pulse-t)/2/t_rise)**2
                     else: return 0 
-        def drive_func(t, args=None):
-            if modulation is None: return amp*envelope(t)*np.cos(wd*t + phase)
-            else: return envelope(t)*modulation(t, wd, amp, phase)
+            def drive_func(t, args=None):
+                if modulation is None: return amp*envelope(t)*np.cos(wd*t + phase)
+                else: return envelope(t)*modulation(t, wd, amp, phase)
 
-        c_str = f'({amp}) * cos(({wd})*t+{phase}) * ('
-        c_str += f'sin(pi*(t-({t_start}))/2/({t_rise}))*sin(pi*(t-({t_start}))/2/({t_rise})) * (np.heaviside(t-({t_start}),0)-np.heaviside(t-({t_start})-({t_rise}),0))'
-        c_str += f' + (np.heaviside(t-({t_start})-({t_rise}),0)-np.heaviside(t-({t_start})-({t_pulse})-({t_rise}),0))'
-        c_str += f' + sin(pi*(t-({t_start}))/2/({t_rise}))*sin(pi*(t-({t_start}))/2/({t_rise})) * (np.heaviside(t-({t_start})-({t_pulse})-({t_rise}),0)-np.heaviside(t-({t_start})-({t_pulse}),0))'
-        c_str += ')'
+            c_str = f'({amp}) * cos(({wd})*t+{phase}) * ('
+            c_str += f'sin(pi*(t-({t_start}))/2/({t_rise}))*sin(pi*(t-({t_start}))/2/({t_rise})) * (np.heaviside(t-({t_start}),0)-np.heaviside(t-({t_start})-({t_rise}),0))'
+            c_str += f' + (np.heaviside(t-({t_start})-({t_rise}),0)-np.heaviside(t-({t_start})-({t_pulse})-({t_rise}),0))'
+            c_str += f' + sin(pi*(t-({t_start}))/2/({t_rise}))*sin(pi*(t-({t_start}))/2/({t_rise})) * (np.heaviside(t-({t_start})-({t_pulse})-({t_rise}),0)-np.heaviside(t-({t_start})-({t_pulse}),0))'
+            c_str += ')'
 
+        self.start_times.append(t_start)
         self.pulse_strs.append(c_str)
         self.envelope_seq.append(envelope)
         self.drive_qubits.append(drive_qubit)
         self.pulse_seq.append(drive_func)
         self.pulse_lengths.append(t_pulse)
-        self.pulse_freqs.append(wd/2/np.pi)
+        self.pulse_freqs.append(wd/2/np.pi if wd is not None else None)
         self.pulse_phases.append(phase)
-        self.time = t_start + t_pulse
-        self.pulse_names.append((min(pulse_levels), max(pulse_levels)))
+        self.pulse_names.append((min(pulse_levels), max(pulse_levels)) if pulse_levels is not None else None)
         self.amps.append(amp)
 
     """
@@ -163,46 +189,63 @@ class PulseSequence:
     Returns the total length of the sequence.
     """
     def gaussian_pulse(self, wd=None, amp=None, t_pulse_sigma=None, pulse_levels:Tuple[str,str]=None, sigma_n=4, modulation:Function=None, drive_qubit=1, t_offset=0, t_start=None, phase=0):
-        assert None not in [wd, amp, pulse_levels, t_pulse_sigma]
+        assert None not in [t_pulse_sigma, drive_qubit]
         if t_start is None: t_start = self.time + t_offset
+        self.time = t_start + sigma_n*t_pulse_sigma
+
+        envelope = None
+        drive_func = None
+        if None in pulse_levels: pulse_levels = None
+
+        if amp is not None:
+            assert None not in [wd, pulse_levels]
+            def envelope(t, args=None):
+                t_max = t_start + sigma_n/2*t_pulse_sigma # point of max in gaussian
+                if t < t_start or t > t_start + sigma_n*t_pulse_sigma: return 0
+                return gaussian(t - t_max, t_pulse_sigma)
+            def drive_func(t, args=None):
+                if modulation is None:
+                    # print(amp, t_start, envelope(t))
+                    return amp*envelope(t)*np.cos(wd*t + phase)
+                else: return envelope(t)*modulation(t, wd, amp, phase)
+                # return amp*envelope(t)*np.sin(wd*t - phase)
+
         self.start_times.append(t_start)
-        def envelope(t, args=None):
-            t_max = t_start + sigma_n/2*t_pulse_sigma # point of max in gaussian
-            if t < t_start or t > t_start + sigma_n*t_pulse_sigma: return 0
-            return gaussian(t - t_max, t_pulse_sigma)
-        def drive_func(t, args=None):
-            if modulation is None:
-                # print(amp, t_start, envelope(t))
-                return amp*envelope(t)*np.cos(wd*t + phase)
-            else: return envelope(t)*modulation(t, wd, amp, phase)
-            # return amp*envelope(t)*np.sin(wd*t - phase)
         self.envelope_seq.append(envelope)
         self.pulse_seq.append(drive_func)
         self.drive_qubits.append(drive_qubit)
         self.pulse_lengths.append(sigma_n*t_pulse_sigma)
-        self.pulse_freqs.append(wd/2/np.pi)
+        self.pulse_freqs.append(wd/2/np.pi if wd is not None else None)
         self.pulse_phases.append(phase)
-        self.time = t_start + sigma_n*t_pulse_sigma
-        self.pulse_names.append((min(pulse_levels), max(pulse_levels)))
+        self.pulse_names.append((min(pulse_levels), max(pulse_levels)) if pulse_levels is not None else None)
         self.amps.append(amp)
 
     def adiabatic_pulse(self, wd=None, amp=None, mu=None, beta=None, period=None, pulse_levels:Tuple[str,str]=None, drive_qubit=1, t_offset=0, t_start=None, phase=0):
+        assert None not in [period, drive_qubit]
         if t_start is None: t_start = self.time + t_offset
+        self.time = t_start + period
+
+        envelope = None
+        drive_func = None
+        if None in pulse_levels: pulse_levels = None
+
+        if amp is not None:
+            assert None not in [wd, mu, beta, pulse_levels]
+            def envelope(t, args=None):
+                if t < t_start or t > t_start + period: return 0
+                return adiabatic_amp(t-t_start, amp_max=1, beta=beta, period=period)
+            def drive_func(t, args=None):
+                phase_t = adiabatic_phase(t-t_start, mu=mu, beta=beta, period=period)
+                return amp*envelope(t)*(np.cos(phase_t)*np.cos(wd*t + phase) - np.sin(phase_t)*np.sin(wd*t + phase))
+
         self.start_times.append(t_start)
-        def envelope(t, args=None):
-            if t < t_start or t > t_start + period: return 0
-            return adiabatic_amp(t-t_start, amp_max=1, beta=beta, period=period)
-        def drive_func(t, args=None):
-            phase_t = adiabatic_phase(t-t_start, mu=mu, beta=beta, period=period)
-            return amp*envelope(t)*(np.cos(phase_t)*np.cos(wd*t + phase) - np.sin(phase_t)*np.sin(wd*t + phase))
         self.envelope_seq.append(envelope)
         self.pulse_seq.append(drive_func)
         self.drive_qubits.append(drive_qubit)
         self.pulse_lengths.append(period)
-        self.pulse_freqs.append(wd/2/np.pi)
+        self.pulse_freqs.append(wd/2/np.pi if wd is not None else None)
         self.pulse_phases.append(phase)
-        self.time = t_start + period
-        self.pulse_names.append((min(pulse_levels), max(pulse_levels)))
+        self.pulse_names.append((min(pulse_levels), max(pulse_levels)) if pulse_levels is not None else None)
         self.amps.append(amp)
 
     """
@@ -217,30 +260,37 @@ class PulseSequence:
     Returns the total length of the sequence.
     """
     def flat_top_pulse(self, wd=None, amp=None, t_pulse=None, pulse_levels:Tuple[str,str]=None, envelope:Function=None, modulation:Function=None, drive_qubit=1, t_offset=0, t_start=None, t_rise=15, sigma_n=2, phase=0):
-        assert None not in [wd, amp, pulse_levels, t_pulse]
+        assert None not in [t_pulse, drive_qubit]
         if t_start is None: t_start = self.time + t_offset
-        self.start_times.append(t_start)
-        if envelope is None:
-            def envelope(t, args=None):
-                    t -= t_start 
-                    t_ramp_sigma = t_rise/sigma_n
-                    if 0 <= t < t_rise: return gaussian(t-t_rise, t_ramp_sigma)
-                    elif t_rise <= t < t_pulse - t_rise: return 1
-                    elif t_pulse - t_rise <= t < t_pulse: return gaussian(t-(t_pulse-t_rise), t_ramp_sigma)
-                    else: return 0 
-        def drive_func(t, args=None):
-            if modulation is None: return amp*envelope(t)*np.cos(wd*t + phase)
-            else: return envelope(t)*modulation(t, wd, amp, phase)
+        self.time = t_start + t_pulse
 
+        envelope = None
+        drive_func = None
+        if None in pulse_levels: pulse_levels = None
+
+        if amp is not None:
+            assert None not in [wd, pulse_levels]
+            if envelope is None:
+                def envelope(t, args=None):
+                        t -= t_start 
+                        t_ramp_sigma = t_rise/sigma_n
+                        if 0 <= t < t_rise: return gaussian(t-t_rise, t_ramp_sigma)
+                        elif t_rise <= t < t_pulse - t_rise: return 1
+                        elif t_pulse - t_rise <= t < t_pulse: return gaussian(t-(t_pulse-t_rise), t_ramp_sigma)
+                        else: return 0 
+            def drive_func(t, args=None):
+                if modulation is None: return amp*envelope(t)*np.cos(wd*t + phase)
+                else: return envelope(t)*modulation(t, wd, amp, phase)
+
+        self.start_times.append(t_start)
         self.pulse_strs.append(None)
         self.envelope_seq.append(envelope)
         self.drive_qubits.append(drive_qubit)
         self.pulse_seq.append(drive_func)
         self.pulse_lengths.append(t_pulse)
-        self.pulse_freqs.append(wd/2/np.pi)
+        self.pulse_freqs.append(wd/2/np.pi if wd is not None else None)
         self.pulse_phases.append(phase)
-        self.time = t_start + t_pulse
-        self.pulse_names.append((min(pulse_levels), max(pulse_levels)))
+        self.pulse_names.append((min(pulse_levels), max(pulse_levels)) if pulse_levels is not None else None)
         self.amps.append(amp)
 
     """
@@ -248,23 +298,31 @@ class PulseSequence:
     I_values, Q_values should be arrays of I, Q values evaluated at times
     """
     def pulse_IQ(self, wd=None, amp=None, pulse_levels:Tuple[str,str]=None, I_values=None, Q_values=None, times=None, drive_qubit=1, t_offset=0, t_start=None, phase=0):
-        assert None not in [wd, amp, pulse_levels, I_values, Q_values, times]
+        assert None not in [times, drive_qubit]
         if t_start is None: t_start = self.time + t_offset
-        self.start_times.append(t_start)
-        I_func = sp.interpolate.interp1d(times, I_values, fill_value='extrapolate', kind='quadratic')
-        Q_func = sp.interpolate.interp1d(times, Q_values, fill_value='extrapolate', kind='quadratic')
-        def drive_func(t, args=None):
-            return amp*I_func(t)*np.cos(wd*t + phase) + amp*Q_func(t)*np.sin(wd*t + phase)
+        self.time = t_start + times[-1]
 
+        envelope = None
+        drive_func = None
+        if None in pulse_levels: pulse_levels = None
+
+        if amp is not None:
+            assert None not in [wd, pulse_levels, I_values, Q_values]
+            I_func = sp.interpolate.interp1d(times, I_values, fill_value='extrapolate', kind='quadratic')
+            Q_func = sp.interpolate.interp1d(times, Q_values, fill_value='extrapolate', kind='quadratic')
+            envelope = [lambda t, args=None: I_func(t), lambda t, args=None: Q_func(t)]
+            def drive_func(t, args=None):
+                return amp*I_func(t)*np.cos(wd*t + phase) + amp*Q_func(t)*np.sin(wd*t + phase)
+
+        self.start_times.append(t_start)
         self.pulse_strs.append(None)
-        self.envelope_seq.append([lambda t, args=None: I_func(t), lambda t, args=None: Q_func(t)])
+        self.envelope_seq.append(envelope)
         self.drive_qubits.append(drive_qubit)
         self.pulse_seq.append(drive_func)
         self.pulse_lengths.append(times[-1])
-        self.pulse_freqs.append(wd/2/np.pi)
+        self.pulse_freqs.append(wd/2/np.pi if wd is not None else None)
         self.pulse_phases.append(phase)
-        self.time = t_start + times[-1]
-        self.pulse_names.append((min(pulse_levels), max(pulse_levels)))
+        self.pulse_names.append((min(pulse_levels), max(pulse_levels)) if pulse_levels is not None else None)
         self.amps.append(amp)
 
     """
@@ -274,25 +332,34 @@ class PulseSequence:
     I_values, Q_values should be arrays of I, Q values evaluated at times
     """
     def pulse_IQ_exp(self, wd=None, amp=None, pulse_levels:Tuple[str,str]=None, I_values=None, Q_values=None, times=None, drive_qubit=1, t_offset=0, t_start=None, phase=0):
-        assert None not in [wd, amp, pulse_levels, I_values, Q_values, times]
+        assert None not in [times, drive_qubit]
         if t_start is None: t_start = self.time + t_offset
-        self.start_times.append(t_start)
-        I_func = sp.interpolate.interp1d(times, I_values, fill_value='extrapolate', kind='quadratic')
-        Q_func = sp.interpolate.interp1d(times, Q_values, fill_value='extrapolate', kind='quadratic')
-        # def drive_func(t, args=None):
-        #     return 1/2*amp*(1j*I_func(t) + Q_func(t))*np.exp(-1j*wd*t - phase)
-        def drive_func(t, args=None):
-            return amp*I_func(t)*np.sin(wd*t - phase) + amp*Q_func(t)*np.cos(wd*t - phase)
+        self.time = t_start + times[-1]
 
+        envelope = None
+        drive_func = None
+        if None in pulse_levels: pulse_levels = None
+
+        if amp is not None:
+            assert None not in [wd, pulse_levels, I_values, Q_values]
+            if t_start is None: t_start = self.time + t_offset
+            I_func = sp.interpolate.interp1d(times, I_values, fill_value='extrapolate', kind='quadratic')
+            Q_func = sp.interpolate.interp1d(times, Q_values, fill_value='extrapolate', kind='quadratic')
+            envelope = [lambda t, args=None: I_func(t), lambda t, args=None: Q_func(t)]
+            # def drive_func(t, args=None):
+            #     return 1/2*amp*(1j*I_func(t) + Q_func(t))*np.exp(-1j*wd*t - phase)
+            def drive_func(t, args=None):
+                return amp*I_func(t)*np.sin(wd*t - phase) + amp*Q_func(t)*np.cos(wd*t - phase)
+
+        self.start_times.append(t_start)
         self.pulse_strs.append(None)
-        self.envelope_seq.append([lambda t, args=None: I_func(t), lambda t, args=None: Q_func(t)])
+        self.envelope_seq.append(envelope)
         self.drive_qubits.append(drive_qubit)
         self.pulse_seq.append(drive_func)
         self.pulse_lengths.append(times[-1])
-        self.pulse_freqs.append(wd/2/np.pi)
+        self.pulse_freqs.append(wd/2/np.pi if wd is not None else None)
         self.pulse_phases.append(phase)
-        self.time = t_start + times[-1]
-        self.pulse_names.append((min(pulse_levels), max(pulse_levels)))
+        self.pulse_names.append((min(pulse_levels), max(pulse_levels)) if pulse_levels is not None else None)
         self.amps.append(amp)
 
 
