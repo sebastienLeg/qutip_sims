@@ -689,6 +689,7 @@ class QSwitch():
             # return np.sum(full_result.states, axis=0)/full_result.ntraj
     
     def evolve_unrotate(self, times, result=None, psi0=None, seq:PulseSequence=None, H=None, c_ops=None, nsteps=1000, max_step=0.1, progress=True):
+        print('WARNING: NEED TO UPDATE UNROTATE TO REFLECT THE ACTUAL ROTATING FRAME, DO NOT ROTATE EVERY EVEC BY ITS EVAL')
         # if not progress: progress = None
         # if c_ops is None:
         #     return qt.mesolve(self.H_solver_unrotate(seq=seq, H=H), psi0, times, progress_bar=progress, options=qt.Options(nsteps=nsteps, max_step=max_step)).states
