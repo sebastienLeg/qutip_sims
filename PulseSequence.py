@@ -11,6 +11,9 @@ def gaussian(x, sigma):
 def logistic(x, sigma):
     return 1 / (1 + np.exp(-x/sigma))
 
+def dgaussian(x, sigma):
+    return -x/sigma**2 * gaussian(x, sigma)
+
 # ====================================================== #
 # Adiabatic pi pulse functions
 # beta ~ slope of the frequency sweep (also adjusts width)
@@ -246,6 +249,33 @@ class PulseSequence:
         self.pulse_freqs.append(wd/2/np.pi if wd is not None else None)
         self.pulse_phases.append(phase)
         self.pulse_names.append((min(pulse_levels), max(pulse_levels)) if pulse_levels is not None else None)
+        self.amps.append(amp)
+
+    def DRAG_pulse(self, wd, amp, t_pulse_sigma, pulse_levels:Tuple[str,str], sigma_n=4, drive_qubit=1, t_offset=0, t_start=None, phase=0, alpha=1, delta=1):
+        assert False, 'not tested'
+        if t_start is None: t_start = self.time + t_offset
+        self.start_times.append(t_start)
+        def envelope_Q(t, args=None):
+                t_max = t_start + sigma_n/2*t_pulse_sigma # point of max in gaussian
+                if t < t_start or t > t_start + sigma_n*t_pulse_sigma: return 0
+                return -1*dgaussian(t - t_max, t_pulse_sigma)
+        def envelope_I(t, args=None):
+                t_max = t_start + sigma_n/2*t_pulse_sigma
+                if t < t_start or t > t_start + sigma_n*t_pulse_sigma: return 0
+                return gaussian(t - t_max, t_pulse_sigma)
+        
+        def drive_func(t, args):
+            return amp*envelope_I(t)*np.cos(wd*t + phase) - alpha*amp*envelope_Q(t)*np.sin(wd*t + phase)/delta
+        
+        self.pulse_strs.append(None)
+        self.envelope_seq.append([envelope_I, envelope_Q])
+        self.pulse_seq.append(drive_func)
+        self.drive_qubits.append(drive_qubit)
+        self.pulse_lengths.append(sigma_n*t_pulse_sigma)
+        self.pulse_phases.append(phase)
+        self.pulse_freqs.append(wd/2/np.pi)
+        self.time = t_start + sigma_n*t_pulse_sigma
+        self.pulse_names.append((min(pulse_levels), max(pulse_levels)))
         self.amps.append(amp)
 
     """

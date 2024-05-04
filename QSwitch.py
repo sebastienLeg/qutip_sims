@@ -3,6 +3,7 @@ import scipy as sp
 import scqubits as scq
 import qutip as qt
 from copy import deepcopy
+import scipy.optimize as opt
 
 from tqdm import tqdm
 
@@ -20,9 +21,14 @@ kHz = 10.0**(-6)
 us = 10.0**3
 ns = 1.0
 
+class ThresholdReached(Exception):
+    def __init__(self, message, result):
+        super().__init__(message)
+        self.result = result
+
 class QSwitch():
-    lvl_name_to_num = dict(g=0, e=1, f=2, h=3, j=4)
-    lvl_num_to_name = ['g', 'e', 'f', 'h', 'j']
+    lvl_name_to_num = dict(g=0, e=1, f=2, h=3, i=4, j=5, k=6, l=7)
+    lvl_num_to_name = ['g', 'e', 'f', 'h', 'j', 'k', 'l', 'm']
 
     def transmon_f0n(self, n, EC, EJ):
         return np.sqrt(8*EC*EJ)*n - EC/12 * (6*n**2 + 6*n + 3) + EC/4
@@ -46,6 +52,7 @@ class QSwitch():
         qubit_freqs=None, alphas=None, # specify either frequencies + anharmonicities or qubit parameters
         useZZs=False, ZZs=None, # specify qubit freqs and ZZ shifts to construct H instead, aka dispersive hamiltonian
         cutoffs=None,
+        crosstalk=0,
         isCavity=[False, False, False, False]) -> None:
 
         assert cutoffs is not None
@@ -126,6 +133,12 @@ class QSwitch():
         self.drive_ops = []
         for q in range(self.nqubits):
             self.drive_ops.append(2*np.pi*(self.a_ops[q].dag() + self.a_ops[q]))
+        for i in range(1, self.nqubits):
+            drive_op = self.drive_ops[i]
+            for j in range(1, self.nqubits):
+                if j != i:
+                    drive_op += self.drive_ops[j] * crosstalk
+            self.drive_ops[i] = drive_op
 
 
     """
@@ -133,6 +146,7 @@ class QSwitch():
     H_tilde = UHU^+ - iUU^+,
     U = e^(-iw_d t (a^+ a + b^+ b + c^+ c + d^+ d))
     """
+
     def H_rot(self, wd, H=None):
         H_rot = H
         if H is None: H_rot = self.H
@@ -275,7 +289,24 @@ class QSwitch():
     Stark shift from drive is ignored
     """
     def get_base_wd(self, state1, state2, keep_sign=False, esys=None, **kwargs):
-        wd = qt.expect(self.H, self.state(state2, esys=esys)) - qt.expect(self.H, self.state(state1, esys=esys))
+
+        nb_photon_1 = np.sum(self.level_name_to_nums(state1))
+        nb_photon_2 = np.sum(self.level_name_to_nums(state2))
+
+        # check if this is a 1 or 2 photon transition
+
+        print(np.abs(nb_photon_1 - nb_photon_2))
+
+        if np.abs(nb_photon_1 - nb_photon_2) ==1:
+            print('One photon transition')
+            wd = qt.expect(self.H, self.state(state1, esys=esys)) - qt.expect(self.H, self.state(state2, esys=esys))
+        elif np.abs(nb_photon_1 - nb_photon_2) == 2 or np.abs(nb_photon_1 - nb_photon_2) == 0:
+            print('Two photon transition')
+            wd = qt.expect(self.H, self.state(state1, esys=esys)) - qt.expect(self.H, self.state(state2, esys=esys))
+            wd = wd/2
+        else:
+            print('Transition not allowed')
+            return None
         if keep_sign: return wd
         return np.abs(wd)
 
@@ -298,58 +329,193 @@ class QSwitch():
         H_tot_rot = self.H_rot(wd) + amp/2*self.drive_ops[drive_qubit]
         return self.find_dressed(state, esys=H_tot_rot.eigenstates())[1]
 
-    def get_wd_helper(self, state1, state2, amp, wd0, drive_qubit, wd_res=0.01, max_it=100, **kwargs):
-        esys_rot = self.H_rot(wd0).eigenstates()
+    # For Floquet
+    def drive_funct(self, t, args):
+        wd = args['wd']
+        return np.cos(wd*t)
+    
+    def max_overlap_H_floquet(self, state, amp, wd, drive_qubit=1):
+
+        H_drive = amp*self.drive_ops[drive_qubit]
+
+        H = [self.H, [H_drive, self.drive_funct]]
+        esys_rot = qt.floquet_modes(H, (2*np.pi)/wd, args={'wd':wd}, options=qt.Options(nsteps=5000))
+
+        evecs, evals = esys_rot
+        esys_rot = [evals, evecs]
+
+        return self.find_dressed(state, esys=esys_rot)[1]
+
+    # def get_wd_helper(self, state1, state2, amp, wd0, drive_qubit, wd_res=0.01, max_it=100, **kwargs):
+    def get_wd_helper(self, wd0, state1, state2, amp, drive_qubit):
+        esys_rot = self.H_rot(wd0[0]).eigenstates()
         psi1 = self.state(state1, esys=esys_rot) # dressed
         psi2 = self.state(state2, esys=esys_rot) # dressed
         plus = 1/np.sqrt(2) * (psi1 + psi2)
         minus = 1/np.sqrt(2) * (psi1 - psi2)
 
         # initial
-        overlap_plus = self.max_overlap_H_tot_rot(plus, amp, wd0, drive_qubit=drive_qubit)
-        overlap_minus = self.max_overlap_H_tot_rot(minus, amp, wd0, drive_qubit=drive_qubit)
+        overlap_plus = self.max_overlap_H_tot_rot(plus, amp, wd0[0], drive_qubit=drive_qubit)
+        overlap_minus = self.max_overlap_H_tot_rot(minus, amp, wd0[0], drive_qubit=drive_qubit)
         avg_overlap = np.mean((overlap_plus, overlap_minus))
         best_overlap = avg_overlap
-        best_wd = wd0
+
+        infidelity = 1 - avg_overlap
+        # print('infidelity', infidelity)
+
+        return infidelity
+
+
+        # best_wd = wd0
         # print('init overlap', best_overlap)
 
-        # trying positive shifts
-        for n in range(1, max_it+1):
-            wd = wd0 + n*wd_res
-            esys_rot = self.H_rot(wd).eigenstates()
-            psi1 = self.state(state1, esys=esys_rot) # dressed
-            psi2 = self.state(state2, esys=esys_rot) # dressed
-            plus = 1/np.sqrt(2) * (psi1 + psi2)
-            minus = 1/np.sqrt(2) * (psi1 - psi2)
-            overlap_plus = self.max_overlap_H_tot_rot(plus, amp, wd, drive_qubit=drive_qubit)
-            overlap_minus = self.max_overlap_H_tot_rot(minus, amp, wd, drive_qubit=drive_qubit)
-            avg_overlap = np.mean((overlap_plus, overlap_minus))
-            if avg_overlap < best_overlap:
-                # print('positive n', n, 'wd', wd, 'wd_res', wd_res, 'overlap', avg_overlap)
-                break
-            else:
-                best_overlap = avg_overlap
-                best_wd = wd
-        if n == max_it: print("Too many iterations, try lower resolution!")
+        # # trying positive shifts
+        # for n in range(1, max_it+1):
+        #     wd = np.abs(wd0 + n*wd_res)
+        #     print('positive shift')
+        #     print('wd', wd/2/np.pi)
+        #     esys_rot = self.H_rot(wd).eigenstates()
+        #     psi1 = self.state(state1, esys=esys_rot) # dressed
+        #     psi2 = self.state(state2, esys=esys_rot) # dressed
+        #     print('psi1', psi1)
+        #     print('psi2', psi2)
+        #     plus = 1/np.sqrt(2) * (psi1 + psi2)
+        #     minus = 1/np.sqrt(2) * (psi1 - psi2)
+        #     overlap_plus = self.max_overlap_H_tot_rot(plus, amp, wd, drive_qubit=drive_qubit)
+        #     overlap_minus = self.max_overlap_H_tot_rot(minus, amp, wd, drive_qubit=drive_qubit)
+        #     avg_overlap = np.mean((overlap_plus, overlap_minus))
+        #     print('avg_overlap', avg_overlap)
+        #     if avg_overlap < best_overlap:
+        #         print('positive n', n, 'wd', wd, 'wd_res', wd_res, 'overlap', avg_overlap)
+        #         # break
+        #     else:
+        #         best_overlap = avg_overlap
+        #         best_wd = wd
+        # if n == max_it: print("Too many iterations, try lower resolution!")
 
-        # trying negative shifts
-        for n in range(1, max_it+1):
-            wd = wd0 - n*wd_res
-            esys_rot = self.H_rot(wd).eigenstates()
-            plus = 1/np.sqrt(2) * (psi1 + psi2)
-            minus = 1/np.sqrt(2) * (psi1 - psi2)
-            overlap_plus = self.max_overlap_H_tot_rot(plus, amp, wd, drive_qubit=drive_qubit)
-            overlap_minus = self.max_overlap_H_tot_rot(minus, amp, wd, drive_qubit=drive_qubit)
-            avg_overlap = np.mean((overlap_plus, overlap_minus))
-            if avg_overlap < best_overlap:
-                # print('negative n', n, 'wd', wd, 'wd_res', wd_res, 'overlap', avg_overlap)
-                break
-            else:
-                best_overlap = avg_overlap
-                best_wd = wd
-        if n == max_it: print("Too many iterations, try lower resolution!")
+        # # trying negative shifts
+        # for n in range(1, max_it+1):
+        #     print('negative shift')
+        #     wd = np.abs(wd0 - n*wd_res)
 
-        return best_wd, best_overlap
+        #     print('wd', wd/2/np.pi)
+
+        #     esys_rot = self.H_rot(wd).eigenstates()
+        #     plus = 1/np.sqrt(2) * (psi1 + psi2)
+        #     minus = 1/np.sqrt(2) * (psi1 - psi2)
+        #     overlap_plus = self.max_overlap_H_tot_rot(plus, amp, wd, drive_qubit=drive_qubit)
+        #     overlap_minus = self.max_overlap_H_tot_rot(minus, amp, wd, drive_qubit=drive_qubit)
+        #     avg_overlap = np.mean((overlap_plus, overlap_minus))
+        #     print('avg_overlap', avg_overlap)
+        #     if avg_overlap < best_overlap:
+        #         # print('negative n', n, 'wd', wd, 'wd_res', wd_res, 'overlap', avg_overlap)
+        #         break
+        #     else:
+        #         best_overlap = avg_overlap
+        #         best_wd = wd
+        # if n == max_it: print("Too many iterations, try lower resolution!")
+
+        # return best_wd, best_overlap
+    
+    def get_wd_helper_floquet(self, wd0, state1, state2, amp, drive_qubit):
+
+        # def drive_funct(t, args):
+        #     wd = args['wd']
+        #     return np.cos(wd*t)
+
+
+        H_drive = amp*self.drive_ops[drive_qubit]
+        H = [self.H0, [H_drive, self.drive_funct]]
+        esys0_rot = qt.floquet_modes(H, (2*np.pi)/wd0[0], args={'wd':wd0[0]}, options=qt.Options(nsteps=5000))
+        evecs, evals = esys0_rot
+        esys0_rot = [evals, evecs]
+        # print('evals', np.array(evals)) 
+
+        psi1 = self.state(state1, esys=esys0_rot)
+        psi2 = self.state(state2, esys=esys0_rot)
+
+        plus = 1/np.sqrt(2) * (psi1 + psi2)
+        minus = 1/np.sqrt(2) * (psi1 - psi2)
+
+        overlap_plus = self.max_overlap_H_floquet(plus, amp, wd0[0], drive_qubit=drive_qubit)
+        overlap_minus = self.max_overlap_H_floquet(minus, amp, wd0[0], drive_qubit=drive_qubit)
+        avg_overlap = np.mean((overlap_plus, overlap_minus))
+
+        # infidelity = np.log(1 - avg_overlap)
+        infidelity = 1 - avg_overlap
+        # print('minus ', overlap_minus)
+        # print('plus ', overlap_plus)
+        # print('infidelity', infidelity)
+        # print(avg_overlap)
+
+        return infidelity
+    
+
+    def get_coupling_rate(self,wd, state1, state2, amp, drive_qubit): 
+
+        H_drive = amp*self.drive_ops[drive_qubit]
+        H = [self.H0, [H_drive, self.drive_funct]]
+        esys0_rot = qt.floquet_modes(H, (2*np.pi)/wd, args={'wd':wd}, options=qt.Options(nsteps=5000))
+        evecs, evals = esys0_rot
+        esys0_rot = [evals, evecs]
+        # print('evals', np.array(evals)) 
+
+        psi1 = self.state(state1, esys=esys0_rot)
+        psi2 = self.state(state2, esys=esys0_rot)
+
+        plus = 1/np.sqrt(2) * (psi1 + psi2)
+        minus = 1/np.sqrt(2) * (psi1 - psi2)
+
+        H_drive = amp*self.drive_ops[drive_qubit]
+        H = [self.H, [H_drive, self.drive_funct]]
+
+        esys_rot = qt.floquet_modes(H, (2*np.pi)/wd, args={'wd':wd}, options=qt.Options(nsteps=5000))
+        evecs, evals = esys_rot
+        esys_rot = [evals, evecs]
+
+        index_plus = self.find_dressed(plus, esys=esys_rot)[0]
+        index_minus = self.find_dressed(minus, esys=esys_rot)[0]
+
+        # compute the energy difference between the two states
+
+        energy_diff = np.abs(evals[index_plus] - evals[index_minus])
+
+        return energy_diff
+
+
+
+    def get_wd_helper_large_drive(self, wd0, state1, state2, amp, drive_qubit):
+
+
+
+        # it kind of works but up to the counter rotating terms
+
+        H0_rot = self.H_rot(wd=wd0[0], H=self.H0)
+        H0_rot_drive = H0_rot + amp/2*self.drive_ops[drive_qubit]
+
+        esys0_rot = H0_rot_drive.eigenstates()
+
+        psi1 = self.state(state1, esys=esys0_rot)
+        psi2 = self.state(state2, esys=esys0_rot)
+
+        plus = 1/np.sqrt(2) * (psi1 + psi2)
+        minus = 1/np.sqrt(2) * (psi1 - psi2)
+
+        # initial
+        overlap_plus = self.max_overlap_H_tot_rot(plus, amp, wd0[0], drive_qubit=drive_qubit)
+        overlap_minus = self.max_overlap_H_tot_rot(minus, amp, wd0[0], drive_qubit=drive_qubit)
+        avg_overlap = np.mean((overlap_plus, overlap_minus))
+
+        infidelity = 1 - avg_overlap
+        # print('minus ', overlap_minus)
+        # print('plus ', overlap_plus)
+        # print('infidelity', infidelity)
+        # print(avg_overlap)
+
+
+
+        return infidelity
+
 
     """
     Fine-tuned drive frequency taking into account stark shift from drive,
@@ -378,21 +544,42 @@ class QSwitch():
     Pi pulse length b/w state1 and state2 (strings representing state)
     amp: freq
     """
-    def get_Tpi(self, state1, state2, amp, drive_qubit=1, pihalf=False, type='const', phi_ext=None, esys=None, **kwargs):
+    def get_Tpi(self, wd, state1, state2, amp, drive_qubit=1, type='const', phi_ext=None, esys=None, **kwargs):
         if esys is None: esys = self.esys
         if phi_ext is not None:
             coupler_H0, H0, H = self.get_H_at_phi_ext(phi_ext)
             esys = H.eigenstates()
         
-        psi0 = self.state(state1, esys=esys)
-        psi1 = self.state(state2, esys=esys)
-        g_eff = psi0.dag() * amp * self.drive_ops[drive_qubit] * psi1 /2/np.pi
-        g_eff = np.abs(g_eff[0][0][0])
+        # psi0 = self.state(state1, esys=esys)
+        # psi1 = self.state(state2, esys=esys)
+        # g_eff = psi0.dag() * amp * self.drive_ops[drive_qubit] * psi1 /2/np.pi
+        # g_eff = np.abs(g_eff[0][0][0])
+            
+        # check if is a one qubit or two qubit gate, for some reason the floquet helper does not work for two qubit gates
+        n_photon_1 = np.array(self.level_name_to_nums(state1))
+        n_photon_2 = np.array(self.level_name_to_nums(state2))
+        photon_diff = n_photon_1 - n_photon_2
+        qubit_nb = len(np.argwhere(photon_diff != 0))
+
+        if qubit_nb == 1:
+            psi0 = self.state(state1, esys=esys)
+            psi1 = self.state(state2, esys=esys)
+            g_eff = psi0.dag() * amp * self.drive_ops[drive_qubit] * psi1 /2/np.pi
+            g_eff = np.abs(g_eff[0][0][0])
+
+        else:
+            g_eff = self.get_coupling_rate(wd, state1, state2, amp, drive_qubit)/2/np.pi
+
+
         if g_eff == 0: return np.inf
         # In general, the formula for this is Tpi = 1/2/(g_eff * R), where
         # R: integrate the pulse shape over the length of the pulse, letting the maximum amplitude be 1, and divide by the characteristic timescale that will go into the pulse as the time length parameter - idea is that R is the scaling parameter between the area of this pulse shape and the constant pulse that adjusts how much longer the pulse needs to be
         if type=='const': return 1/2/g_eff
         elif type=='gauss':
+            if 'sigma_n' not in kwargs or kwargs['sigma_n'] is None: sigma_n = 4
+            else: sigma_n = kwargs['sigma_n']
+            tpi = 1/2 / (g_eff * np.sqrt(2*np.pi) * sp.special.erf(sigma_n/2 / np.sqrt(2)))
+        elif type =='drag':
             if 'sigma_n' not in kwargs or kwargs['sigma_n'] is None: sigma_n = 4
             else: sigma_n = kwargs['sigma_n']
             tpi = 1/2 / (g_eff * np.sqrt(2*np.pi) * sp.special.erf(sigma_n/2 / np.sqrt(2)))
@@ -428,11 +615,11 @@ class QSwitch():
         ):
         if amp is None: assert t_pulse is not None
         else:
+            if wd is None: wd = self.get_wd(state1, state2, amp, drive_qubit=drive_qubit, verbose=verbose, **kwargs)
             if t_pulse is None:
-                t_pulse = self.get_Tpi(state1, state2, amp=amp, drive_qubit=drive_qubit, type=type, **kwargs)
+                t_pulse = self.get_Tpi(wd, state1, state2, amp=amp, drive_qubit=drive_qubit, type=type, **kwargs)
                 if pihalf: t_pulse /= 2
             t_pulse *= t_pulse_factor
-            if wd is None: wd = self.get_wd(state1, state2, amp, drive_qubit=drive_qubit, verbose=verbose, **kwargs)
         if type == 'const':
             if 't_rise' not in kwargs.keys() or kwargs['t_rise'] is None: kwargs['t_rise'] = 1
             seq.const_pulse(
@@ -482,6 +669,23 @@ class QSwitch():
                 drive_qubit=drive_qubit,
                 t_offset=t_offset,
             )
+
+        elif type == 'drag':
+            if 'sigma_n' not in kwargs.keys() or kwargs['sigma_n'] is None: kwargs['sigma_n'] = 4
+            if 'alpha' not in kwargs.keys() or kwargs['alpha'] is None: kwargs['alpha'] = 0.5
+            seq.DRAG_pulse(
+                wd=wd,
+                amp=amp,
+                phase=phase,
+                t_pulse_sigma=t_pulse,
+                pulse_levels=(state1, state2),
+                drive_qubit=drive_qubit,
+                t_offset=t_offset,
+                sigma_n=kwargs['sigma_n'],
+                alpha=kwargs['alpha'], 
+                delta=kwargs['delta'], 
+                # t_start=t_start
+                )
         else: assert False, 'Pulse type not implemented'
         return wd
 
@@ -662,31 +866,24 @@ class QSwitch():
     
     def evolve(self, psi0, seq:PulseSequence, times, H=None, c_ops=None, nsteps=1000, max_step=0.1, use_str_solve=False, progress=True):
         if not progress: progress = None
-        if c_ops is None:
-            if not use_str_solve:
-                return qt.mesolve(self.H_solver(seq=seq, H=H), psi0, times, progress_bar=progress, options=qt.Options(nsteps=nsteps, max_step=max_step)).states
-            return qt.mesolve(self.H_solver_str(seq), psi0, times, progress_bar=progress, options=qt.Options(nsteps=nsteps, max_step=max_step)).states
-        else:
-            full_result = qt.mcsolve(self.H_solver_str(seq), psi0, times, c_ops, progress_bar=progress, options=qt.Options(nsteps=nsteps))
-            return np.sum(full_result.states, axis=0)/full_result.ntraj
+        if not use_str_solve:
+            return qt.mesolve(self.H_solver(seq=seq, H=H), psi0, times, c_ops, progress_bar=progress, options=qt.Options(nsteps=nsteps, max_step=max_step)).states
+        return qt.mesolve(self.H_solver_str(seq), psi0, times, c_ops, progress_bar=progress, options=qt.Options(nsteps=nsteps, max_step=max_step)).states
 
     def evolve_array(self, psi0, seq:PulseSequence, times, H=None, c_ops=None, nsteps=1000, max_step=0.1, use_str_solve=False, progress=True):
         if not progress: progress = None
-        if c_ops is None:
-            return qt.mesolve(self.H_solver_array(seq=seq, times=times, H=H), psi0, times, progress_bar=progress, options=qt.Options(nsteps=nsteps, max_step=max_step)).states
-        else:
-            full_result = qt.mcsolve(self.H_solver_array(seq, times=times, H=H), psi0, times, c_ops, progress_bar=progress, options=qt.Options(nsteps=nsteps, max_step=max_step))
-            return np.sum(full_result.states, axis=0)/full_result.ntraj
+        return qt.mesolve(self.H_solver_array(seq=seq, times=times, H=H), psi0, times, c_ops, progress_bar=progress, options=qt.Options(nsteps=nsteps, max_step=max_step)).states
 
-    def evolve_rot_frame(self, psi0, seq:PulseSequence, times, c_ops=None, nsteps=1000, max_step=None, progress=True):
-        assert c_ops == None
-        if not progress: progress = None
-        if c_ops is None:
-            return qt.mesolve(self.H_solver_rot(seq), psi0, times, progress_bar=progress, options=qt.Options(nsteps=nsteps, max_step=max_step)).states
-        else:
-            pass
-            # full_result = qt.mcsolve(self.H_solver_str(seq), psi0, times, c_ops, progress_bar=progress, options=qt.Options(nsteps=nsteps))
-            # return np.sum(full_result.states, axis=0)/full_result.ntraj
+    # def evolve_rot_frame(self, psi0, seq:PulseSequence, times, c_ops=None, nsteps=1000, max_step=None, progress=True):
+    #     assert c_ops == None
+    #     if not progress: progress = None
+    #     if c_ops is None:
+    #         return qt.mesolve(self.H_solver_rot(seq), psi0, times, progress_bar=progress, options=qt.Options(nsteps=nsteps, max_step=max_step)).states
+    #     else:
+    #         pass
+    #         # full_result = qt.mcsolve(self.H_solver_str(seq), psi0, times, c_ops, progress_bar=progress, options=qt.Options(nsteps=nsteps))
+    #         # return np.sum(full_result.states, axis=0)/full_result.ntraj
+
     
     def evolve_unrotate(self, times, result=None, psi0=None, seq:PulseSequence=None, H=None, c_ops=None, nsteps=1000, max_step=0.1, progress=True):
         print('WARNING: NEED TO UPDATE UNROTATE TO REFLECT THE ACTUAL ROTATING FRAME, DO NOT ROTATE EVERY EVEC BY ITS EVAL')
