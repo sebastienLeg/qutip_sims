@@ -522,7 +522,7 @@ class QSwitch():
     analyzed with 3 different steps of increasingly small resolution
     Reference: Gideon's brute stark code
     """
-    def get_wd(self, state1, state2, amp, drive_qubit=1, verbose=True, **kwargs):
+    def get_wd_old(self, state1, state2, amp, drive_qubit=1, verbose=True, **kwargs):
         wd_base = self.get_base_wd(state1, state2, **kwargs)
         wd = wd_base
         wd_res = 0.25
@@ -539,6 +539,91 @@ class QSwitch():
             it += 1
         if verbose: print('updated drive freq (GHz) from', wd_base/2/np.pi, 'to', wd/2/np.pi)
         return wd
+    
+
+    def get_wd(self, state1, state2, amp, drive_qubit=1, verbose=True, **kwargs):
+
+        wd_base = self.get_base_wd(state1, state2, **kwargs)
+        # print('base drive freq (GHz)', wd_base/2/np.pi)
+        # wd = wd_base
+        # # wd_res = 0.05*wd
+        # wd_res = 0.25
+        # overlap = 0
+        # it = 0
+        # while overlap < 0.99:
+        #     if it >= 20: break
+        #     if wd_res < 1e-6: break
+        #     old_overlap = overlap
+        #     # wd, overlap = self.get_wd_helper(state1, state2, amp, wd0=wd, drive_qubit=drive_qubit, wd_res=wd_res, **kwargs)
+        #     wd, overlap = self.get_wd_helper_bis(state1, state2, amp, wd0=wd, drive_qubit=drive_qubit, wd_res=wd_res, **kwargs)
+        #     if verbose: print('\tnew overlap', overlap, 'wd', wd/2/np.pi, 'wd_res', wd_res/2/np.pi, 'GHz')
+        #     if overlap == old_overlap: wd_res /= 2
+        #     else: wd_res /= 2
+        #     it += 1
+        # if verbose: print('updated drive freq (GHz) from', wd_base/2/np.pi, 'to', wd/2/np.pi)
+
+
+        # res = opt.minimize(self.get_wd_helper_floquet, wd_base, args=(state1, state2, amp, drive_qubit),
+        #                     bounds=[(wd_base*0.95, wd_base*1.05)], method='L-BFGS-B',
+        #                     options={'ftol': 1e-30,'gtol': 1e-30,'maxiter': 10000, 'maxfun': 10000})
+
+
+        # check if it is a one qubit or two qubit gate, for some reason the floquet helper does not work for two qubit gates
+
+        n_photon_1 = np.array(self.level_name_to_nums(state1))
+        n_photon_2 = np.array(self.level_name_to_nums(state2))
+        photon_diff = n_photon_1 - n_photon_2
+        qubit_nb = len(np.argwhere(photon_diff != 0))
+
+        if qubit_nb == 1:
+            print('One qubit gate')
+
+            res = opt.minimize(self.get_wd_helper, wd_base, args=(state1, state2, amp, drive_qubit),
+                                bounds=[(wd_base*0.95, wd_base*1.05)], method='L-BFGS-B',
+                                options={'ftol': 1e-5,'gtol': 1e-5,'maxiter': 10000, 'maxfun': 10000})
+            
+            wd = res.x[0]
+            
+        else: 
+            print('Two qubit gate')
+
+            # res = opt.minimize(self.get_wd_helper_floquet, wd_base, args=(state1, state2, amp, drive_qubit),
+            #                     bounds=[(wd_base*0.95, wd_base*1.05)], method='L-BFGS-B',
+            #                     options={'ftol': 1e-5,'gtol': 1e-5,'maxiter': 10000, 'maxfun': 10000})
+            print('hello')
+            res = opt.minimize(self.get_wd_helper_floquet, wd_base, args=(state1, state2, amp, drive_qubit),
+                                bounds=[(wd_base*0.95, wd_base*1.05)], method='L-BFGS-B',
+                                options={'ftol': 1e-5,'gtol': 1e-5,'maxiter': 10000, 'maxfun': 10000})
+
+            # print('first step: ', 1 - res.fun)
+            
+            # if (1-res.fun) < 0.95:
+
+            #     def callback(x, f, accepted):
+            #         if f < 1e-1:
+            #             raise ThresholdReached("Threshold reached, stopping optimization", x)
+            #     # print('Second step')
+            #     bounds = [(wd_base*0.9, wd_base*1.1)]
+            #     args=(state1, state2, amp, drive_qubit)
+            #     minimizer_kwargs = {"method": "L-BFGS-B", "bounds": bounds, "args": args}
+            #     try:
+            #         res = opt.basinhopping(self.get_wd_helper_floquet, wd_base, minimizer_kwargs=minimizer_kwargs, T=1e-1, niter=50, callback=callback)
+            #         wd = res.x[0]
+            #     except ThresholdReached as e:
+            #         wd = e.result[0]
+            #         print('wd')
+            #         print(wd)
+            #         print('e')
+            #         print(e)
+            
+            # else: wd = res.x[0] 
+        wd = res.x[0]
+        if verbose: 
+            print(res)
+            print('final drive freq (GHz)', wd)
+
+        return wd
+
 
     """
     Pi pulse length b/w state1 and state2 (strings representing state)
