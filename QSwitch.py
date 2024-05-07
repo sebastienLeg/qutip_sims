@@ -303,6 +303,9 @@ class QSwitch():
         elif np.abs(nb_photon_1 - nb_photon_2) == 2 or np.abs(nb_photon_1 - nb_photon_2) == 0:
             print('Two photon transition')
             wd = qt.expect(self.H, self.state(state1, esys=esys)) - qt.expect(self.H, self.state(state2, esys=esys))
+            print('wd: ', wd)
+            print(qt.expect(self.H, self.state(state1, esys=esys))/2/np.pi)
+            print(qt.expect(self.H, self.state(state2, esys=esys))/2/np.pi)
             wd = wd/2
         else:
             print('Transition not allowed')
@@ -339,15 +342,14 @@ class QSwitch():
         H_drive = amp*self.drive_ops[drive_qubit]
 
         H = [self.H, [H_drive, self.drive_funct]]
-        esys_rot = qt.floquet_modes(H, (2*np.pi)/wd, args={'wd':wd}, options=qt.Options(nsteps=5000))
+        esys_rot = qt.floquet_modes(H, (2*np.pi)/wd, args={'wd':wd}, options=qt.Options(nsteps=8000))
 
         evecs, evals = esys_rot
         esys_rot = [evals, evecs]
 
         return self.find_dressed(state, esys=esys_rot)[1]
 
-    # def get_wd_helper(self, state1, state2, amp, wd0, drive_qubit, wd_res=0.01, max_it=100, **kwargs):
-    def get_wd_helper(self, wd0, state1, state2, amp, drive_qubit):
+    def get_wd_helper(self, wd0, state1, state2, amp, drive_qubit, verbose=True):
         esys_rot = self.H_rot(wd0[0]).eigenstates()
         psi1 = self.state(state1, esys=esys_rot) # dressed
         psi2 = self.state(state2, esys=esys_rot) # dressed
@@ -361,75 +363,18 @@ class QSwitch():
         best_overlap = avg_overlap
 
         infidelity = 1 - avg_overlap
-        # print('infidelity', infidelity)
+        if verbose: print('infidelity: ', infidelity)
 
         return infidelity
 
-
-        # best_wd = wd0
-        # print('init overlap', best_overlap)
-
-        # # trying positive shifts
-        # for n in range(1, max_it+1):
-        #     wd = np.abs(wd0 + n*wd_res)
-        #     print('positive shift')
-        #     print('wd', wd/2/np.pi)
-        #     esys_rot = self.H_rot(wd).eigenstates()
-        #     psi1 = self.state(state1, esys=esys_rot) # dressed
-        #     psi2 = self.state(state2, esys=esys_rot) # dressed
-        #     print('psi1', psi1)
-        #     print('psi2', psi2)
-        #     plus = 1/np.sqrt(2) * (psi1 + psi2)
-        #     minus = 1/np.sqrt(2) * (psi1 - psi2)
-        #     overlap_plus = self.max_overlap_H_tot_rot(plus, amp, wd, drive_qubit=drive_qubit)
-        #     overlap_minus = self.max_overlap_H_tot_rot(minus, amp, wd, drive_qubit=drive_qubit)
-        #     avg_overlap = np.mean((overlap_plus, overlap_minus))
-        #     print('avg_overlap', avg_overlap)
-        #     if avg_overlap < best_overlap:
-        #         print('positive n', n, 'wd', wd, 'wd_res', wd_res, 'overlap', avg_overlap)
-        #         # break
-        #     else:
-        #         best_overlap = avg_overlap
-        #         best_wd = wd
-        # if n == max_it: print("Too many iterations, try lower resolution!")
-
-        # # trying negative shifts
-        # for n in range(1, max_it+1):
-        #     print('negative shift')
-        #     wd = np.abs(wd0 - n*wd_res)
-
-        #     print('wd', wd/2/np.pi)
-
-        #     esys_rot = self.H_rot(wd).eigenstates()
-        #     plus = 1/np.sqrt(2) * (psi1 + psi2)
-        #     minus = 1/np.sqrt(2) * (psi1 - psi2)
-        #     overlap_plus = self.max_overlap_H_tot_rot(plus, amp, wd, drive_qubit=drive_qubit)
-        #     overlap_minus = self.max_overlap_H_tot_rot(minus, amp, wd, drive_qubit=drive_qubit)
-        #     avg_overlap = np.mean((overlap_plus, overlap_minus))
-        #     print('avg_overlap', avg_overlap)
-        #     if avg_overlap < best_overlap:
-        #         # print('negative n', n, 'wd', wd, 'wd_res', wd_res, 'overlap', avg_overlap)
-        #         break
-        #     else:
-        #         best_overlap = avg_overlap
-        #         best_wd = wd
-        # if n == max_it: print("Too many iterations, try lower resolution!")
-
-        # return best_wd, best_overlap
-    
-    def get_wd_helper_floquet(self, wd0, state1, state2, amp, drive_qubit):
-
-        # def drive_funct(t, args):
-        #     wd = args['wd']
-        #     return np.cos(wd*t)
+    def get_wd_helper_floquet(self, wd0, state1, state2, amp, drive_qubit, verbose=True):
 
 
         H_drive = amp*self.drive_ops[drive_qubit]
         H = [self.H0, [H_drive, self.drive_funct]]
-        esys0_rot = qt.floquet_modes(H, (2*np.pi)/wd0[0], args={'wd':wd0[0]}, options=qt.Options(nsteps=5000))
+        esys0_rot = qt.floquet_modes(H, (2*np.pi)/wd0[0], args={'wd':wd0[0]}, options=qt.Options(nsteps=8000))
         evecs, evals = esys0_rot
         esys0_rot = [evals, evecs]
-        # print('evals', np.array(evals)) 
 
         psi1 = self.state(state1, esys=esys0_rot)
         psi2 = self.state(state2, esys=esys0_rot)
@@ -441,12 +386,8 @@ class QSwitch():
         overlap_minus = self.max_overlap_H_floquet(minus, amp, wd0[0], drive_qubit=drive_qubit)
         avg_overlap = np.mean((overlap_plus, overlap_minus))
 
-        # infidelity = np.log(1 - avg_overlap)
         infidelity = 1 - avg_overlap
-        # print('minus ', overlap_minus)
-        # print('plus ', overlap_plus)
-        # print('infidelity', infidelity)
-        # print(avg_overlap)
+        if verbose: print('infidelity: ', infidelity)
 
         return infidelity
     
@@ -455,7 +396,7 @@ class QSwitch():
 
         H_drive = amp*self.drive_ops[drive_qubit]
         H = [self.H0, [H_drive, self.drive_funct]]
-        esys0_rot = qt.floquet_modes(H, (2*np.pi)/wd, args={'wd':wd}, options=qt.Options(nsteps=5000))
+        esys0_rot = qt.floquet_modes(H, (2*np.pi)/wd, args={'wd':wd}, options=qt.Options(nsteps=8000))
         evecs, evals = esys0_rot
         esys0_rot = [evals, evecs]
         # print('evals', np.array(evals)) 
@@ -469,7 +410,7 @@ class QSwitch():
         H_drive = amp*self.drive_ops[drive_qubit]
         H = [self.H, [H_drive, self.drive_funct]]
 
-        esys_rot = qt.floquet_modes(H, (2*np.pi)/wd, args={'wd':wd}, options=qt.Options(nsteps=5000))
+        esys_rot = qt.floquet_modes(H, (2*np.pi)/wd, args={'wd':wd}, options=qt.Options(nsteps=8000))
         evecs, evals = esys_rot
         esys_rot = [evals, evecs]
 
@@ -482,39 +423,6 @@ class QSwitch():
 
         return energy_diff
 
-
-
-    def get_wd_helper_large_drive(self, wd0, state1, state2, amp, drive_qubit):
-
-
-
-        # it kind of works but up to the counter rotating terms
-
-        H0_rot = self.H_rot(wd=wd0[0], H=self.H0)
-        H0_rot_drive = H0_rot + amp/2*self.drive_ops[drive_qubit]
-
-        esys0_rot = H0_rot_drive.eigenstates()
-
-        psi1 = self.state(state1, esys=esys0_rot)
-        psi2 = self.state(state2, esys=esys0_rot)
-
-        plus = 1/np.sqrt(2) * (psi1 + psi2)
-        minus = 1/np.sqrt(2) * (psi1 - psi2)
-
-        # initial
-        overlap_plus = self.max_overlap_H_tot_rot(plus, amp, wd0[0], drive_qubit=drive_qubit)
-        overlap_minus = self.max_overlap_H_tot_rot(minus, amp, wd0[0], drive_qubit=drive_qubit)
-        avg_overlap = np.mean((overlap_plus, overlap_minus))
-
-        infidelity = 1 - avg_overlap
-        # print('minus ', overlap_minus)
-        # print('plus ', overlap_plus)
-        # print('infidelity', infidelity)
-        # print(avg_overlap)
-
-
-
-        return infidelity
 
 
     """
@@ -544,31 +452,8 @@ class QSwitch():
     def get_wd(self, state1, state2, amp, drive_qubit=1, verbose=True, **kwargs):
 
         wd_base = self.get_base_wd(state1, state2, **kwargs)
-        # print('base drive freq (GHz)', wd_base/2/np.pi)
-        # wd = wd_base
-        # # wd_res = 0.05*wd
-        # wd_res = 0.25
-        # overlap = 0
-        # it = 0
-        # while overlap < 0.99:
-        #     if it >= 20: break
-        #     if wd_res < 1e-6: break
-        #     old_overlap = overlap
-        #     # wd, overlap = self.get_wd_helper(state1, state2, amp, wd0=wd, drive_qubit=drive_qubit, wd_res=wd_res, **kwargs)
-        #     wd, overlap = self.get_wd_helper_bis(state1, state2, amp, wd0=wd, drive_qubit=drive_qubit, wd_res=wd_res, **kwargs)
-        #     if verbose: print('\tnew overlap', overlap, 'wd', wd/2/np.pi, 'wd_res', wd_res/2/np.pi, 'GHz')
-        #     if overlap == old_overlap: wd_res /= 2
-        #     else: wd_res /= 2
-        #     it += 1
-        # if verbose: print('updated drive freq (GHz) from', wd_base/2/np.pi, 'to', wd/2/np.pi)
 
-
-        # res = opt.minimize(self.get_wd_helper_floquet, wd_base, args=(state1, state2, amp, drive_qubit),
-        #                     bounds=[(wd_base*0.95, wd_base*1.05)], method='L-BFGS-B',
-        #                     options={'ftol': 1e-30,'gtol': 1e-30,'maxiter': 10000, 'maxfun': 10000})
-
-
-        # check if it is a one qubit or two qubit gate, for some reason the floquet helper does not work for two qubit gates
+        # check if it is a one qubit or two qubit gate
 
         n_photon_1 = np.array(self.level_name_to_nums(state1))
         n_photon_2 = np.array(self.level_name_to_nums(state2))
@@ -578,7 +463,7 @@ class QSwitch():
         if qubit_nb == 1:
             print('One qubit gate')
 
-            res = opt.minimize(self.get_wd_helper, wd_base, args=(state1, state2, amp, drive_qubit),
+            res = opt.minimize(self.get_wd_helper, wd_base, args=(state1, state2, amp, drive_qubit, verbose),
                                 bounds=[(wd_base*0.95, wd_base*1.05)], method='L-BFGS-B',
                                 options={'ftol': 1e-5,'gtol': 1e-5,'maxiter': 10000, 'maxfun': 10000})
             
@@ -586,41 +471,30 @@ class QSwitch():
             
         else: 
             print('Two qubit gate')
-
-            # res = opt.minimize(self.get_wd_helper_floquet, wd_base, args=(state1, state2, amp, drive_qubit),
-            #                     bounds=[(wd_base*0.95, wd_base*1.05)], method='L-BFGS-B',
-            #                     options={'ftol': 1e-5,'gtol': 1e-5,'maxiter': 10000, 'maxfun': 10000})
-            print('hello')
-            res = opt.minimize(self.get_wd_helper_floquet, wd_base, args=(state1, state2, amp, drive_qubit),
+            res = opt.minimize(self.get_wd_helper_floquet, wd_base, args=(state1, state2, amp, drive_qubit, verbose),
                                 bounds=[(wd_base*0.95, wd_base*1.05)], method='L-BFGS-B',
                                 options={'ftol': 1e-5,'gtol': 1e-5,'maxiter': 10000, 'maxfun': 10000})
-
-            # print('first step: ', 1 - res.fun)
             
-            # if (1-res.fun) < 0.95:
 
-            #     def callback(x, f, accepted):
-            #         if f < 1e-1:
-            #             raise ThresholdReached("Threshold reached, stopping optimization", x)
-            #     # print('Second step')
-            #     bounds = [(wd_base*0.9, wd_base*1.1)]
-            #     args=(state1, state2, amp, drive_qubit)
-            #     minimizer_kwargs = {"method": "L-BFGS-B", "bounds": bounds, "args": args}
-            #     try:
-            #         res = opt.basinhopping(self.get_wd_helper_floquet, wd_base, minimizer_kwargs=minimizer_kwargs, T=1e-1, niter=50, callback=callback)
-            #         wd = res.x[0]
-            #     except ThresholdReached as e:
-            #         wd = e.result[0]
-            #         print('wd')
-            #         print(wd)
-            #         print('e')
-            #         print(e)
+            print('first step: ', 1 - res.fun)
+            print('wd', res.x[0]/2/np.pi)
             
-            # else: wd = res.x[0] 
-        wd = res.x[0]
-        if verbose: 
-            print(res)
-            print('final drive freq (GHz)', wd)
+            if (1 - res.fun) < 0.9:
+                def callback(x, f, accepted):
+                    if f < 2e-2:
+                        raise ThresholdReached("Threshold reached, stopping optimization", x)
+                # print('Second step')
+                bounds = [(wd_base*0.98, wd_base*1.02)]
+                args=(state1, state2, amp, drive_qubit, verbose)
+                minimizer_kwargs = {"method": "L-BFGS-B", "bounds": bounds, "args": args}
+                try:
+                    res = opt.basinhopping(self.get_wd_helper_floquet, wd_base, minimizer_kwargs=minimizer_kwargs, T=1e-1, niter=50, callback=callback)
+                    wd = res.x[0]
+                except ThresholdReached as e:
+                    wd = e.result[0]
+                    res = e.result
+            
+            else: wd = res.x[0] 
 
         return wd
 
