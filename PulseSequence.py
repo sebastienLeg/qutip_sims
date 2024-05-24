@@ -328,7 +328,9 @@ class PulseSequence:
     I_values, Q_values should be arrays of I, Q values evaluated at times
     """
     def pulse_IQ(self, wd=None, amp=None, pulse_levels:Tuple[str,str]=None, I_values=None, Q_values=None, times=None, drive_qubit=1, t_offset=0, t_start=None, phase=0):
-        assert None not in [times, drive_qubit]
+        # assert None not in times 
+        # assert None not in drive_qubit
+        
         if t_start is None: t_start = self.time + t_offset
         self.time = t_start + times[-1]
 
@@ -337,7 +339,7 @@ class PulseSequence:
         if None in pulse_levels: pulse_levels = None
 
         if amp is not None:
-            assert None not in [wd, pulse_levels, I_values, Q_values]
+            # assert None not in [wd, pulse_levels, I_values, Q_values]
             I_func = sp.interpolate.interp1d(times, I_values, fill_value='extrapolate', kind='quadratic')
             Q_func = sp.interpolate.interp1d(times, Q_values, fill_value='extrapolate', kind='quadratic')
             envelope = [lambda t, args=None: I_func(t), lambda t, args=None: Q_func(t)]
